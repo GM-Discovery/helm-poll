@@ -1,0 +1,283 @@
+:root{
+    /* --- Figma-ish tokens --- */
+    --bg: #17182b;               /* deep navy */
+    --panel: #1f2036;            /* slightly lighter */
+    --panel-2: #232441;          /* card alt */
+    --stroke: rgba(255,255,255,.10);
+    --stroke-2: rgba(255,255,255,.14);
+
+    --text: rgba(255,255,255,.92);
+    --muted: rgba(255,255,255,.70);
+    --muted-2: rgba(255,255,255,.55);
+
+    --accent: #cdb9b0;           /* champagne/tan */
+    --accent-2: #bfa9a0;         /* darker accent */
+    --danger: #ef4444;
+    --ok: #22c55e;
+
+    --r-xl: 22px;
+    --r-lg: 18px;
+    --r-md: 14px;
+
+    --shadow: 0 14px 34px rgba(0,0,0,.35);
+    --shadow-soft: 0 10px 22px rgba(0,0,0,.22);
+
+    --pad-x: 18px;
+    --pad-y: 18px;
+
+    --maxw: 420px;
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; }
+
+  body{
+    font-family: system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    margin:0;
+    background: var(--bg);
+    color: var(--text);
+    line-height:1.35;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Safe-area friendly full-screen wrapper */
+  .screen{
+    min-height:100vh;
+    padding:
+      calc(env(safe-area-inset-top) + 18px)
+      calc(env(safe-area-inset-right) + 18px)
+      calc(env(safe-area-inset-bottom) + 24px)
+      calc(env(safe-area-inset-left) + 18px);
+    display:flex;
+    justify-content:center;
+  }
+
+  /* Constrain to phone-ish width even on desktop */
+  .wrap{
+    width:100%;
+    max-width: var(--maxw);
+  }
+
+  .muted{ color: var(--muted); }
+  .muted2{ color: var(--muted-2); }
+
+  /* Cards */
+  .card{
+    background: var(--panel);
+    border: 1px solid var(--stroke);
+    border-radius: var(--r-xl);
+    padding: 16px;
+    margin: 14px 0;
+    box-shadow: var(--shadow-soft);
+  }
+
+  .card.flat{
+    box-shadow: none;
+    background: transparent;
+    border: none;
+    padding: 0;
+  }
+
+  /* Layout helpers */
+  .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .grid{ display:grid; gap:12px; }
+  .spacer{ height: 10px; }
+
+  /* Headings */
+  h1,h2,h3{ margin:0 0 10px 0; letter-spacing:.2px; }
+  h1{ font-size: 28px; line-height:1.12; font-weight:800; text-align:center; }
+  h2{ font-size: 18px; font-weight:750; }
+  .sub{
+    text-align:center;
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 6px;
+  }
+
+  /* Inputs */
+  input, textarea, select{
+    width:100%;
+    padding: 13px 14px;
+    border-radius: var(--r-lg);
+    border: 1px solid var(--stroke);
+    font-size: 15px;
+    background: rgba(255,255,255,.04);
+    color: var(--text);
+    outline: none;
+  }
+  textarea{ resize:vertical; min-height: 92px; }
+  input::placeholder, textarea::placeholder{ color: rgba(255,255,255,.45); }
+
+  input:focus, textarea:focus, select:focus{
+    border-color: rgba(205,185,176,.55);
+    box-shadow: 0 0 0 3px rgba(205,185,176,.12);
+  }
+
+  /* Icon input row (for right-side icons like email/eye) */
+  .input-row{
+    position:relative;
+  }
+  .input-row .icon{
+    position:absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    opacity:.8;
+    font-size: 14px;
+    user-select:none;
+    cursor:pointer;
+  }
+  .input-row input{ padding-right: 42px; }
+
+  /* Buttons */
+  button{
+    width:100%;
+    padding: 13px 14px;
+    font-size: 15px;
+    border-radius: var(--r-lg);
+    border: 1px solid transparent;
+    cursor:pointer;
+    background: rgba(255,255,255,.06);
+    color: var(--text);
+  }
+  button:hover{ filter: brightness(1.06); }
+  button:active{ transform: translateY(1px); }
+
+  .btn-primary{
+    background: var(--accent);
+    color: rgba(20,20,28,.92);
+    font-weight: 750;
+    box-shadow: 0 10px 22px rgba(0,0,0,.25);
+  }
+  .btn-ghost{
+    background: rgba(255,255,255,.06);
+    border-color: var(--stroke);
+  }
+  .btn-small{
+    width:auto;
+    padding: 8px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+  }
+
+  /* Pills (tabs) */
+  .pills{ display:flex; gap:10px; flex-wrap:wrap; }
+  .pill{
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--stroke);
+    background: rgba(255,255,255,.04);
+    color: var(--muted);
+    font-size: 13px;
+    cursor:pointer;
+  }
+  .pill.active{
+    background: rgba(205,185,176,.14);
+    border-color: rgba(205,185,176,.45);
+    color: var(--text);
+  }
+
+  /* Chips (Open/Closed etc) */
+  .chip{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    border: 1px solid var(--stroke);
+    color: var(--muted);
+    background: rgba(255,255,255,.04);
+  }
+  .chip.open{
+    border-color: rgba(34,197,94,.35);
+    background: rgba(34,197,94,.12);
+    color: rgba(220,255,235,.92);
+  }
+  .chip.closed{
+    border-color: rgba(239,68,68,.35);
+    background: rgba(239,68,68,.12);
+    color: rgba(255,225,225,.92);
+  }
+
+  /* Poll list item card */
+  .list-item{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap: 12px;
+    padding: 14px;
+    border-radius: var(--r-xl);
+    border: 1px solid var(--stroke);
+    background: rgba(255,255,255,.03);
+  }
+  .list-item .title{
+    font-weight: 750;
+    font-size: 14px;
+    margin-bottom: 4px;
+  }
+  .list-item .meta{
+    font-size: 12px;
+    color: var(--muted);
+    display:flex;
+    gap: 10px;
+    align-items:center;
+    flex-wrap:wrap;
+  }
+  .chev{
+    opacity:.8;
+    font-size: 18px;
+    user-select:none;
+  }
+
+  /* Links */
+  a{ color: var(--accent); text-decoration:none; }
+  a:hover{ text-decoration:underline; }
+
+  /* HR */
+  hr{
+    border: none;
+    border-top: 1px solid var(--stroke);
+    margin: 14px 0;
+  }
+  .topbar{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .topbar h1{
+    text-align:left;
+    font-size: 20px;
+    font-weight: 800;
+  }
+
+
+/* ===== Compatibility & missing polish ===== */
+.smallBtn{
+  width:auto;
+  padding:8px 12px;
+  border-radius:999px;
+  font-size:13px;
+  background: rgba(255,255,255,.06);
+  color: var(--text);
+  border: 1px solid var(--stroke);
+  cursor:pointer;
+}
+.smallBtn:hover{ filter: brightness(1.06); }
+
+pre#resultsBox{
+  background: rgba(0,0,0,.25);
+  border: 1px solid var(--stroke);
+  color: var(--text);
+  padding: 12px;
+  border-radius: 16px;
+  overflow:auto;
+}
+
+/* Keep modal readable since it uses a white panel */
+#qrModal strong{ color:#111827; }
+#qrModal p, #qrModal .muted, #qrModal #copyStatus, #qrModal #qrLinkText{ color:#374151; opacity:1; }
+#qrModal button{ width:auto; }

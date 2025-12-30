@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bread Poll</title>
+
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Bread Poll">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icon-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png">
+
+  <!-- QR library (make sure this file exists in /opt/bread-poll-mvp/web/qrcode.min.js) -->
+  <script src="/qrcode.min.js"></script>
+
+  <link rel="stylesheet" href="/app.css">
+
+</head>
+
+<body>
+  <div class="screen">
+    <div class="wrap" id="app">
+  <div class="topbar">
+    <div>
+      <h1>Bread Poll</h1>
+      <div class="muted">Create → Vote → Share → Live results.</div>
+    </div>
+    <button id="shareBtn" class="btn-small btn-ghost" type="button" style="height:42px; width:auto;">Share</button>
+  </div>
+
+  <!-- Advanced settings hidden unless ?settings=1 -->
+  <div class="card" id="apiCard" style="display:none;">
+    <div class="row">
+      <label class="muted" style="min-width:180px;">Advanced settings</label>
+      <input id="apiBase" placeholder="Custom API endpoint (advanced use)" />
+      <button id="saveApi" type="button">Save</button>
+      <span id="apiStatus" class="muted"></span>
+    </div>
+  </div>
+
+  <!-- Create -->
+  <div class="card">
+    <h2 style="margin-bottom:6px;">Create</h2>
+    <div class="muted2" style="font-size:12px; margin-bottom:12px;">Make a poll, then share the link or QR.</div>
+    <div class="grid">
+      <input id="newTitle" placeholder="Poll title" />
+
+      <div class="row">
+        <label class="muted" style="min-width:52px;">Type</label>
+        <select id="newType" style="max-width:260px;">
+          <option value="YES_NO">YES_NO</option>
+          <option value="SINGLE_SELECT">SINGLE_SELECT</option>
+        </select>
+      </div>
+
+      <textarea id="newOptions" rows="3" placeholder="Options (one per line). Leave blank for YES_NO."></textarea>
+
+      <button id="createPoll" type="button">Create</button>
+      <div id="createOut" class="muted"></div>
+    </div>
+  </div>
+
+  <!-- Home -->
+  <div class="card" id="homeCard">
+    <div class="topbar">
+      <div>
+        <h2 style="margin:0;">Available Polls</h2>
+        <div class="muted2" style="font-size:12px; margin-top:6px;">Newest first.</div>
+      </div>
+      <button id="refreshPolls" type="button" class="btn-small btn-ghost" style="width:auto; height:42px;">Refresh</button>
+    </div>
+
+    <div style="margin-top:12px;">
+      <input id="search" placeholder="Search polls…" />
+    </div>
+
+    <div id="emptyState" class="muted" style="display:none; padding:14px; text-align:center;">
+      No polls yet. Create one above.
+    </div>
+
+    <!-- THIS WAS MISSING IN YOUR CURRENT FILE -->
+    <div id="pollList" class="grid" style="margin-top:12px;"></div>
+  </div>
+
+  <!-- Poll View -->
+  <div class="card" id="pollView" style="display:none;">
+    <div class="row" style="justify-content:space-between;">
+      <h2 id="pollTitle" style="margin:0;"></h2>
+      <button id="closePoll" type="button">Close</button>
+    </div>
+    <div class="muted" id="pollMeta" style="margin-top:6px;"></div>
+
+    <h3 style="margin-top:16px;">Vote</h3>
+    <div id="voteButtons" class="row"></div>
+    <div class="muted" id="voteOut"></div>
+
+    <h3 style="margin-top:16px;">Results</h3>
+    <pre id="resultsBox">{}</pre>
+
+    <div class="muted" style="margin-top:12px;">
+      Link: <a id="shareLink" href="#" target="_blank" rel="noreferrer"></a>
+      <button id="copyLink" type="button" class="smallBtn" style="margin-left:10px;">Copy</button>
+    </div>
+  </div>
+
+  <!-- QR Share Modal -->
+  <div id="qrModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); padding:24px; z-index:9999;">
+    <div style="max-width:420px; margin:10vh auto; background:#fff; border-radius:16px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,0.18);">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <strong>Share</strong>
+        <button id="qrClose" type="button" class="smallBtn" style="padding:8px 12px;">Close</button>
+      </div>
+
+      <p class="muted" style="margin-top:10px;">Scan this QR code to open the poll.</p>
+
+      <div id="qrBox" style="display:flex; justify-content:center; padding:14px;"></div>
+
+      <div style="margin-top:10px;">
+        <div class="muted" style="font-size:12px; word-break:break-all;" id="qrLinkText"></div>
+        <div class="row" style="margin-top:10px;">
+          <button id="copyLinkQr" type="button">Copy Link</button>
+        </div>
+        <div class="muted" id="copyStatus" style="margin-top:6px; font-size:12px;"></div>
+      </div>
+    </div>
+  </div>
+
+<script defer src="/app.js"></script>
+    </div>
+  </div>
+</body>
+</html>
+

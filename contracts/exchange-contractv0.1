@@ -1,0 +1,211 @@
+# Contract v0.1  
+**System-level specification (not pretending the deployed MVP is the full ledger)**
+
+---
+
+## 0. Scope
+
+This contract defines:
+
+- Exchange Node behavior (poll intake, voting, escalation, ledger commits)
+- Identity and proxy-trail vote semantics
+- Storage and retention (“nearly empty” install, ledger-first)
+
+This contract does not require that every property below is enforced by the current deployed MVP.
+
+Where enforcement is not yet implemented, the contract distinguishes **Target Behavior** from **Current MVP Behavior**.
+
+---
+
+## 1. Definitions
+
+**Token ID**  
+Unique identifier for a ledger participant (user, proxy, validator, council, or organization).
+
+**Identity**  
+All ledger-addressed token records for a Token ID, optionally correlated off-ledger to a human or organization.
+
+**Poll**  
+A question with options, metadata, tags, expiry rules, and a tally function.
+
+**Vote Result Payload (Minimum Commit)**  
+{ token_id, poll_id, final_choice, timestamp }
+
+**Vote Trail Payload (Extended Commit / optional separate log)**  
+Proxy chain, overrides, validator attestations, and any supporting details needed to audit stewardship of delegated trust.
+
+**Exchange**  
+A service that hosts polls, collects votes, applies policy, and commits to a ledger.
+
+**Escalation**  
+Rules moving polls upward to higher exchanges or councils based on tags and policy.
+
+---
+
+## 2. Roles and Permissions
+
+### 2.1 Admin Users
+
+Admins can configure:
+
+- Call Classes (types of polls / governance calls)
+- Weights for call classes
+- Tally functions (including representative scaling, e.g. multiplying by 1000)
+- Who may create polls (by role, class, stake, or council assignment)
+- Who may close polls
+- Maximum open duration per poll class or creator class
+- Escalation policies (tag-based routing to user groups or higher exchanges)
+
+---
+
+### 2.2 Validators / Proxies
+
+- Validators are highly standardized and earn reputation from ledger consistency with peers.
+- Proxies may receive delegated trust.
+- Proxy delegation and overrides must be representable in the vote trail.
+
+---
+
+### 2.3 Standard Users
+
+- Standard users have basic write permissions for core poll types (yes/no, single-select list).
+- Permissions are subject to admin policy and quotas.
+
+---
+
+## 3. Poll Lifecycle Rules
+
+### 3.1 Creation
+
+- Polls may be created locally in an Exchange node.
+- Polls may remain local-only unless escalated or submitted to a ledger-admitting exchange.
+
+---
+
+### 3.2 Expiry and Closure
+
+Every poll has:
+
+- `created_at`
+- `expires_at` (or TTL)
+- `max_open_duration` (policy-enforced cap)
+
+Poll creators may close their poll early.
+
+Admin policy may cap open time and define auto-closure behavior.
+
+---
+
+### 3.3 Deletion
+
+- Polls are not deleted by default.
+- Non-ledger local polls may be pruned **only if**:
+  - they were never escalated, and
+  - they were never admitted to a ledger
+- Such pruning must be explicitly configured and is **off by default**.
+
+---
+
+## 4. Ledger Admission and Escalation
+
+### 4.1 Ledger Admission
+
+A poll is considered “on the ledger” when an Exchange configured as ledger-admitting accepts it and commits it.
+
+Different exchanges may have different admission policies:
+
+- Some accept general public additions.
+- Higher or federated councils may accept only selected poll classes to avoid ledger clogging.
+
+---
+
+### 4.2 Escalation Policy
+
+- Poll tags combined with admin rules determine routing to higher exchanges or user groups.
+- Escalation is controlled; not all polls become ledger objects.
+
+---
+
+## 5. Voting Semantics (Proxy Trails and Overrides)
+
+### 5.1 Core Requirement
+
+The ledger must be able to represent:
+
+- Delegation chains (e.g. A → Paul → Boss → Association)
+- Default votes cast by the highest active delegate when a user does not override
+- Overrides, including:
+  - who overrode
+  - when the override occurred
+  - what the previous delegated intent was
+
+---
+
+### 5.2 Minimum Commit vs Extended Commit
+
+**Minimum Commit (required):**
+
+- Token ID
+- Poll ID
+- Final vote result
+
+**Extended Commit (recommended / separate log):**
+
+- Full proxy trail
+- Overrides
+- Validator attestations
+
+**Principle:**
+
+Fairness to the individual is guaranteed by the minimum payload.  
+Fairness to all is auditable only if individuals compare ledgers and/or consult validator reputation.
+
+This principle is asserted without claiming omniscience.
+
+---
+
+## 6. Consensus and Validator Reputation
+
+Consensus is defined as the set of mathematical rules that determine:
+
+- Validity of entries
+- Conflict resolution
+- How validator reputation is computed from ledger agreement
+
+**Placeholder:**  
+“Consensus Equations” are referenced by a versioned specification (trust-point system architecture; document/file ID TBD).
+
+---
+
+## 7. Storage and “Nearly Empty” Node Requirement
+
+The Exchange executable should remain small and operationally simple.
+
+Default mode favors:
+
+- Local-only polling with retention policy
+- Ledger commits kept minimal
+- Optional separation of trail payloads into a distinct store or log
+
+Nodes are not forced to carry bulky history unless they choose to.
+
+Goal: node operators are not “managing a beast,” and disk is preserved for ledger needs.
+
+---
+
+## 8. Current MVP Behavior vs Target Behavior
+
+### Current MVP Behavior
+
+- Reverse-proxied web UI and API reachable publicly
+- Exchange writes gated by HTTP Basic Auth at the proxy layer (e.g., Caddy)
+
+### Target System Behavior
+
+- Role-, stake-, or council-based permissions
+- Poll expiry and auto-closure
+- Escalation and ledger admission policy
+- Proxy-trail vote semantics
+- Validator reputation based on consensus equations
+
+---

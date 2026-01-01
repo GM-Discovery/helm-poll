@@ -1,3 +1,6 @@
+import Quill from "quill";
+import "quill/dist/quill.snow.css";
+
 // ---- storage ----
   const LS_API = "breadpoll_api";
   const LS_TOKENS = "breadpoll_tokens"; // map poll_id -> voter_token
@@ -19,6 +22,28 @@
   const apiStatus = document.getElementById("apiStatus");
   apiBase.value = API;
 
+  let quill = null;
+
+function initQuestionEditor() {
+  const el = document.getElementById("questionEditor");
+  if (!el) return;
+
+  quill = new Quill(el, {
+    theme: "snow",
+    placeholder: "Write the full question here… You can add links, emphasis, and lists.",
+    modules: {
+      toolbar: [
+        ["bold", "italic", "underline"],
+        [{ list: "ordered" }, { list: "bullet" }],
+        ["link"],
+        ["clean"],
+      ],
+    },
+  });
+}
+
+window.addEventListener("DOMContentLoaded", initQuestionEditor);
+  
   function showApiCardIfNeeded(){
     if (params.get("settings") === "1") apiCard.style.display = "block";
   }
@@ -106,6 +131,7 @@
     const poll_type = document.getElementById("newType").value;
     const raw = document.getElementById("newOptions").value.split("\n").map(x=>x.trim()).filter(Boolean);
     const options = (poll_type === "YES_NO" && raw.length === 0) ? ["Yes","No"] : raw;
+    const question_html = quill ? quill.root.innerHTML : "";
 
     if (!title){ out.textContent = "Title required."; return; }
     if (options.length < 2){ out.textContent = "Need at least 2 options."; return; }
@@ -117,7 +143,7 @@
       const r = await fetch(`${API}/polls`, {
         method:"POST",
         headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({ title, poll_type, options })
+        body: JSON.stringify({ title, poll_type, options, question_html })
       });
 
       const rawBody = await r.text();

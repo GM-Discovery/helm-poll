@@ -281,3 +281,32 @@ pre#resultsBox{
 #qrModal strong{ color:#111827; }
 #qrModal p, #qrModal .muted, #qrModal #copyStatus, #qrModal #qrLinkText{ color:#374151; opacity:1; }
 #qrModal button{ width:auto; }
+
+/* --- Quill sanity patch (minimal, safe) --- */
+#questionEditor { 
+  min-height: 140px; 
+}
+
+.ql-toolbar.ql-snow,
+.ql-container.ql-snow {
+  border-color: var(--stroke) !important;
+  border-radius: 14px;
+  background: rgba(255,255,255,.03);
+}
+
+.ql-toolbar.ql-snow {
+  border-bottom: 1px solid var(--stroke) !important;
+}
+
+.ql-container.ql-snow {
+  overflow: hidden;
+}
+
+.ql-editor {
+  min-height: 140px;
+  color: var(--text);
+}
+
+.ql-snow .ql-stroke { stroke: var(--text); }
+.ql-snow .ql-fill { fill: var(--text); }
+.ql-snow .ql-picker { color: var(--text); }

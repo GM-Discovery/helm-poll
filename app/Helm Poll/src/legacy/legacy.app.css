@@ -1,5 +1,5 @@
 :root{
-    /* --- Figma-ish tokens --- */
+/* --- Figma-ish tokens --- */
     --bg: #17182b;               /* deep navy */
     --panel: #1f2036;            /* slightly lighter */
     --panel-2: #232441;          /* card alt */
@@ -30,7 +30,7 @@
 
   *{ box-sizing:border-box; }
   html,body{ height:100%; }
-
+  
   body{
     font-family: system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     margin:0;
@@ -281,71 +281,3 @@ pre#resultsBox{
 #qrModal strong{ color:#111827; }
 #qrModal p, #qrModal .muted, #qrModal #copyStatus, #qrModal #qrLinkText{ color:#374151; opacity:1; }
 #qrModal button{ width:auto; }
-
-/* --- Mobile-first layout patch (Helm Poll) --- */
-
-:root {
-  --max: 520px;           /* phone-friendly column */
-  --pad: 16px;
-  --radius: 12px;
-  --gap: 12px;
-  --border: #e6e6e6;
-  --bg: #ffffff;
-  --soft: #f7f7f7;
-  --text: #111;
-}
-
-/* Page */
-body {
-  margin: 0;
-  padding: var(--pad);
-  background: var(--bg);
-  color: var(--text);
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-}
-
-/* Center everything into a single readable column */
-body > * {
-  max-width: var(--max);
-  margin-left: auto;
-  margin-right: auto;
-}
-
-/* Headings: tighten */
-h1, h2, h3 {
-  margin: 0 0 10px 0;
-  line-height: 1.1;
-}
-
-/* Inputs/buttons: make them feel consistent */
-input, select, textarea, button {
-  font: inherit;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  padding: 10px 12px;
-  box-sizing: border-box;
-}
-
-button {
-  background: var(--soft);
-  cursor: pointer;
-}
-
-button:hover { filter: brightness(0.98); }
-
-/* Make form controls full-width on mobile */
-input, select, textarea, button {
-  width: 100%;
-}
-
-/* Space blocks vertically */
-section, .card, .panel, .box, .container, .content {
-  margin-bottom: var(--gap);
-}
-
-/* If you have a row layout anywhere, stack it on mobile */
-@media (max-width: 640px) {
-  .row, .grid, .cols, .split, .flex {
-    display: block !important;
-  }
-}

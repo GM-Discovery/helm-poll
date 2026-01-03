@@ -1,325 +1,644 @@
-import Quill from "quill";
-import "quill/dist/quill.snow.css";
+(() => {
+  "use strict";
 
-// ---- storage ----
+  // =========================
+  // Storage keys
+  // =========================
   const LS_API = "breadpoll_api";
-  const LS_TOKENS = "breadpoll_tokens"; // map poll_id -> voter_token
+  const LS_TOKENS = "breadpoll_tokens"; // poll_id -> voter_token (device-local)
+  const LS_LOCAL_POLLS = "breadpoll_local_polls_v1"; // array of poll objects
+  const LS_LOCAL_VOTES = "breadpoll_local_votes_v1"; // poll_id -> { byToken: {token: choice}, counts: {option: n} }
 
-  function getTokens(){ try { return JSON.parse(localStorage.getItem(LS_TOKENS) || "{}"); } catch { return {}; } }
-  function setToken(pollId, token){ const t=getTokens(); t[pollId]=token; localStorage.setItem(LS_TOKENS, JSON.stringify(t)); }
-  function getToken(pollId){ const t=getTokens(); return t[pollId] || null; }
-
+  // =========================
+  // API base selection (optional)
+  // =========================
   const params = new URLSearchParams(location.search);
   const apiOverride = params.get("api");
-  let API = apiOverride || localStorage.getItem(LS_API) || `${location.origin}/api`;
+  let API = apiOverride || localStorage.getItem(LS_API) || "http://127.0.0.1:8787/api";
 
-  let es = null; // EventSource
-  let currentPollId = null; // used for Share button
+  // =========================
+  // Runtime state
+  // =========================
+  let es = null; // EventSource (remote live stream only)
+  let currentPollId = null;
+  let quill = null; // optional Quill instance
 
-  // ---- advanced settings UI ----
-  const apiCard = document.getElementById("apiCard");
-  const apiBase = document.getElementById("apiBase");
-  const apiStatus = document.getElementById("apiStatus");
-  apiBase.value = API;
+  // =========================
+  // Helpers: tokens
+  // =========================
+  function getTokens() {
+    try {
+      return JSON.parse(localStorage.getItem(LS_TOKENS) || "{}");
+    } catch {
+      return {};
+    }
+  }
 
-  let quill = null;
+  function setToken(pollId, token) {
+    const t = getTokens();
+    t[pollId] = token;
+    localStorage.setItem(LS_TOKENS, JSON.stringify(t));
+  }
 
-function initQuestionEditor() {
-  const el = document.getElementById("questionEditor");
-  if (!el) return;
+  function getToken(pollId) {
+    const t = getTokens();
+    return t[pollId] || null;
+  }
 
-  quill = new Quill(el, {
-    theme: "snow",
-    placeholder: "Write the full question here… You can add links, emphasis, and lists.",
-    modules: {
-      toolbar: [
-        ["bold", "italic", "underline"],
-        [{ list: "ordered" }, { list: "bullet" }],
-        ["link"],
-        ["clean"],
-      ],
-    },
-  });
-}
+  function ensureLocalToken(pollId) {
+    let tok = getToken(pollId);
+    if (!tok) {
+      tok = "localtok_" + makeId();
+      setToken(pollId, tok);
+    }
+    return tok;
+  }
 
-window.addEventListener("DOMContentLoaded", initQuestionEditor);
-  
-  function showApiCardIfNeeded(){
+  // =========================
+  // Helpers: local polls
+  // =========================
+  function loadLocalPolls() {
+    try {
+      return JSON.parse(localStorage.getItem(LS_LOCAL_POLLS) || "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  function saveLocalPolls(polls) {
+    localStorage.setItem(LS_LOCAL_POLLS, JSON.stringify(polls));
+  }
+
+  function addLocalPoll(p) {
+    const polls = loadLocalPolls();
+    polls.unshift(p);
+    saveLocalPolls(polls);
+  }
+
+  function getLocalPoll(id) {
+    const polls = loadLocalPolls();
+    return polls.find(p => p.id === id) || null;
+  }
+
+  // =========================
+  // Helpers: local votes/results
+  // =========================
+  function loadLocalVotesAll() {
+    try {
+      return JSON.parse(localStorage.getItem(LS_LOCAL_VOTES) || "{}");
+    } catch {
+      return {};
+    }
+  }
+
+  function saveLocalVotesAll(obj) {
+    localStorage.setItem(LS_LOCAL_VOTES, JSON.stringify(obj));
+  }
+
+  function getLocalVoteState(pollId, options) {
+    const all = loadLocalVotesAll();
+    const st = all[pollId] || { byToken: {}, counts: {} };
+
+    // Ensure counts keys exist for current options
+    const counts = st.counts || {};
+    (options || []).forEach(opt => {
+      if (typeof counts[opt] !== "number") counts[opt] = 0;
+    });
+
+    st.counts = counts;
+    all[pollId] = st;
+    saveLocalVotesAll(all);
+
+    return st;
+  }
+
+  function setLocalVote(pollId, token, choice, options) {
+    const all = loadLocalVotesAll();
+    const st = all[pollId] || { byToken: {}, counts: {} };
+
+    st.byToken = st.byToken || {};
+    st.counts = st.counts || {};
+
+    // Initialize counts for options
+    (options || []).forEach(opt => {
+      if (typeof st.counts[opt] !== "number") st.counts[opt] = 0;
+    });
+
+    const prev = st.byToken[token];
+
+    // If changing vote, decrement old choice
+    if (prev && typeof st.counts[prev] === "number") {
+      st.counts[prev] = Math.max(0, st.counts[prev] - 1);
+    }
+
+    // Set new
+    st.byToken[token] = choice;
+    if (typeof st.counts[choice] !== "number") st.counts[choice] = 0;
+    st.counts[choice] += 1;
+
+    all[pollId] = st;
+    saveLocalVotesAll(all);
+  }
+
+  function buildLocalResults(poll) {
+    const st = getLocalVoteState(poll.id, poll.options || []);
+    const counts = st.counts || {};
+    const total = Object.values(counts).reduce((a, b) => a + (Number(b) || 0), 0);
+
+    return {
+      poll_id: poll.id,
+      total_votes: total,
+      counts: counts,
+    };
+  }
+
+  // =========================
+  // UI helpers
+  // =========================
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>\"']/g, m => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "\"": "&quot;",
+      "'": "&#039;",
+    }[m]));
+  }
+
+  function makeId() {
+    if (crypto && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+    return String(Date.now()) + "_" + Math.random().toString(16).slice(2);
+  }
+
+  function closeStream() {
+    if (es) {
+      try { es.close(); } catch {}
+    }
+    es = null;
+  }
+
+  function showApiCardIfNeeded() {
+    const apiCard = document.getElementById("apiCard");
+    if (!apiCard) return;
     if (params.get("settings") === "1") apiCard.style.display = "block";
   }
 
-  async function ping(){
+  async function ping() {
+    const apiStatus = document.getElementById("apiStatus");
     try {
-      const r = await fetch(`${API}/health`, { cache:"no-store" });
-      apiStatus.textContent = r.ok ? "OK" : "Not OK";
+      const r = await fetch(`${API}/health`, { cache: "no-store" });
+      if (!r.ok) throw new Error(String(r.status));
+      if (apiStatus) apiStatus.textContent = "Connected.";
+      return true;
     } catch {
-      apiStatus.textContent = "Unreachable";
+      if (apiStatus) apiStatus.textContent = "Not connected.";
+      return false;
     }
   }
 
-  document.getElementById("saveApi").onclick = () => {
-    API = apiBase.value.trim().replace(/\/$/, "");
-    localStorage.setItem(LS_API, API);
-    ping().then(refreshPolls).catch(()=>{});
-  };
+  // =========================
+  // Quill (optional)
+  // =========================
+  function initQuestionEditor() {
+    const el = document.getElementById("questionEditor");
+    if (!el) return null;
 
-  // ---- list ----
-  async function refreshPolls(){
+    if (typeof window.Quill === "undefined") {
+      console.warn("Quill not loaded; editor disabled (safe).");
+      return null;
+    }
+
+    if (el.__quill_inited) return quill;
+    el.__quill_inited = true;
+
+    quill = new window.Quill(el, {
+      theme: "snow",
+      placeholder: "Write details here… (links, emphasis, lists)",
+      modules: {
+        toolbar: [
+          ["bold", "italic", "underline"],
+          [{ list: "ordered" }, { list: "bullet" }],
+          ["link"],
+          ["clean"],
+        ],
+      },
+    });
+
+    return quill;
+  }
+
+  // =========================
+  // Share / QR (optional)
+  // =========================
+  function pollLink(pollId) {
+    const url = new URL(window.location.href);
+    url.hash = `#poll=${encodeURIComponent(String(pollId))}`;
+    return url.toString();
+  }
+
+  async function copyToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  function openQr(link) {
+    const modal = document.getElementById("qrModal");
+    const qrBox = document.getElementById("qrBox");
+    const linkText = document.getElementById("qrLinkText");
+
+    if (linkText) linkText.textContent = link;
+    if (modal) modal.style.display = "block";
+    if (qrBox) qrBox.innerHTML = "";
+
+    if (typeof window.QRCode === "undefined") {
+      console.warn("QRCode library not loaded; showing link only.");
+      return;
+    }
+
+    try {
+      if (qrBox) new window.QRCode(qrBox, { text: link, width: 220, height: 220 });
+    } catch (e) {
+      console.log("QR render failed:", e);
+    }
+  }
+
+  // =========================
+  // Poll list rendering
+  // =========================
+  function renderPollList(polls) {
     const list = document.getElementById("pollList");
     const empty = document.getElementById("emptyState");
-    const q = (document.getElementById("search").value || "").toLowerCase().trim();
+    const q = (document.getElementById("search")?.value || "").trim().toLowerCase();
 
-    let polls = [];
-    try {
-      const r = await fetch(`${API}/polls`, { cache:"no-store" });
-      const raw = await r.text();
-      if (!r.ok) throw new Error(`GET /polls failed ${r.status}: ${raw.slice(0,200)}`);
-      polls = JSON.parse(raw);
-    } catch (e) {
-      list.innerHTML = "";
-      empty.style.display = "block";
-      empty.textContent = "Could not load polls.";
-      console.log(e);
-      return;
-    }
-
-    const filtered = q ? polls.filter(p => (p.title || "").toLowerCase().includes(q)) : polls;
+    if (!list || !empty) return;
 
     list.innerHTML = "";
-    if (!filtered.length){
+    empty.style.display = "block";
+    empty.textContent = "";
+
+    const filtered = q
+      ? polls.filter(p => (p.title || "").toLowerCase().includes(q))
+      : polls;
+
+    if (!filtered.length) {
       empty.style.display = "block";
-      empty.textContent = "No polls yet. Create one above.";
+      empty.textContent = "No local polls yet. Create one above.";
       return;
     }
+
     empty.style.display = "none";
 
-    for (const p of filtered){
+    for (const p of filtered) {
       const div = document.createElement("div");
       const isClosed = !!(p.closed || p.is_closed || p.status === "CLOSED");
+      const badge = p.is_local ? "Local" : "Remote";
 
       div.className = "list-item";
       div.innerHTML = `
         <div style="min-width:0;">
           <div class="title" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-            ${p.title || "(untitled)"}
+            ${escapeHtml(p.title || "(untitled)")}
           </div>
           <div class="meta">
-            <span>${p.poll_type || ""}</span>
+            <span>${escapeHtml(p.poll_type || "")}</span>
             <span class="chip ${isClosed ? "closed" : "open"}">${isClosed ? "Closed" : "Open"}</span>
+            <span class="chip">${badge}</span>
           </div>
         </div>
         <button class="btn-small btn-primary" type="button">Vote</button>
       `;
 
       const voteBtn = div.querySelector("button");
-      voteBtn.onclick = (e) => { e.stopPropagation(); openPoll(p); };
-
+      if (voteBtn) voteBtn.onclick = (e) => { e.stopPropagation(); openPoll(p); };
       div.onclick = () => openPoll(p);
+
       list.appendChild(div);
     }
   }
 
-  document.getElementById("refreshPolls").onclick = refreshPolls;
-  document.getElementById("search").addEventListener("input", refreshPolls);
+  // =========================
+  // Refresh polls (Local-first; remote optional)
+  // =========================
+  async function refreshPolls() {
+    const local = loadLocalPolls().map(p => ({ ...p, is_local: true }));
+    renderPollList(local);
 
-  // ---- create ----
-  document.getElementById("createPoll").onclick = async () => {
-    const out = document.getElementById("createOut");
-    const btn = document.getElementById("createPoll");
-
-    const title = document.getElementById("newTitle").value.trim();
-    const poll_type = document.getElementById("newType").value;
-    const raw = document.getElementById("newOptions").value.split("\n").map(x=>x.trim()).filter(Boolean);
-    const options = (poll_type === "YES_NO" && raw.length === 0) ? ["Yes","No"] : raw;
-    const question_html = quill ? quill.root.innerHTML : "";
-
-    if (!title){ out.textContent = "Title required."; return; }
-    if (options.length < 2){ out.textContent = "Need at least 2 options."; return; }
-
-    btn.disabled = true;
-    out.textContent = "Creating...";
-
+    // Optional remote merge (never breaks local)
     try {
-      const r = await fetch(`${API}/polls`, {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({ title, poll_type, options, question_html })
-      });
+      const r = await fetch(`${API}/polls`, { cache: "no-store" });
+      if (!r.ok) return;
+      const remote = await r.json();
+      if (!Array.isArray(remote)) return;
 
-      const rawBody = await r.text();
+      const localIds = new Set(local.map(p => p.id));
+      const merged = [...local];
 
-      if (!r.ok){
-        out.textContent = `Create failed (${r.status}).`;
-        console.log("Create failed:", r.status, rawBody);
-        return;
+      for (const p of remote) {
+        if (!localIds.has(p.id)) merged.push({ ...p, is_local: false });
       }
 
-      let data;
-      try { data = JSON.parse(rawBody); }
-      catch {
-        out.textContent = "Create failed (server returned non-JSON).";
-        console.log("Non-JSON success body:", rawBody);
-        return;
-      }
-
-      if (!data?.id){
-        out.textContent = "Create failed (missing poll id).";
-        console.log("Bad success payload:", data);
-        return;
-      }
-
-      out.textContent = "Created.";
-      document.getElementById("newTitle").value = "";
-      document.getElementById("newOptions").value = "";
-
-      await refreshPolls();
-      openPoll(data);
-
-    } catch (e) {
-      out.textContent = "Create failed (network error).";
-      console.log(e);
-    } finally {
-      btn.disabled = false;
+      renderPollList(merged);
+    } catch {
+      // ignore; local already shown
     }
-  };
-
-  // ---- poll view ----
-  function closeStream(){
-    if (es){ es.close(); es = null; }
   }
 
-  function pollLink(pollId){
-    return `${location.origin}${location.pathname}#${pollId}`;
+  // =========================
+  // Open poll (Local-first)
+  // =========================
+  function openFromHash() {
+    const m = /#poll=([^&]+)/.exec(window.location.hash || "");
+    if (!m) return;
+    const pollId = decodeURIComponent(m[1] || "");
+    if (!pollId) return;
+
+    const local = getLocalPoll(pollId);
+    if (local) {
+      openPoll({ ...local, is_local: true });
+    } else {
+      openPoll({ id: pollId, is_local: false });
+    }
   }
 
-  function openPoll(p){
-    if (!p?.id) return;
+  async function openPoll(p) {
+    const pollId = p?.id;
+    if (!pollId) return;
 
-    currentPollId = p.id;
+    const isLocal = !!p?.is_local || String(pollId).startsWith("local_");
+    currentPollId = pollId;
 
-    closeStream();
-    const view = document.getElementById("pollView");
-    view.style.display = "block";
-
-    document.getElementById("pollTitle").textContent = p.title || "(untitled)";
-    document.getElementById("pollMeta").textContent = `${p.poll_type || ""} · ${p.id}`;
-
-    const link = pollLink(p.id);
-    const a = document.getElementById("shareLink");
-    a.textContent = link;
-    a.href = link;
-
-    document.getElementById("copyLink").onclick = async () => {
-      try { await navigator.clipboard.writeText(link); }
-      catch {}
-    };
-
-    document.getElementById("closePoll").onclick = () => {
-      closeStream();
-      view.style.display = "none";
-      currentPollId = null;
-    };
-
+    const pollView = document.getElementById("pollView");
+    const pollTitle = document.getElementById("pollTitle");
+    const pollMeta = document.getElementById("pollMeta");
+    const voteOut = document.getElementById("voteOut");
+    const resultsBox = document.getElementById("resultsBox");
     const vb = document.getElementById("voteButtons");
-    vb.innerHTML = "";
-    (p.options || []).forEach(opt => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = opt;
-      b.onclick = () => castVote(p.id, opt);
-      vb.appendChild(b);
-    });
 
-    es = new EventSource(`${API}/polls/${p.id}/stream`);
-    es.addEventListener("results", (ev) => {
+    if (pollView) pollView.style.display = "block";
+    if (voteOut) voteOut.textContent = "";
+    if (resultsBox) resultsBox.textContent = "";
+    if (vb) vb.innerHTML = "";
+
+    let full = p;
+
+    if (isLocal) {
+      full = getLocalPoll(pollId) || p;
+      full.is_local = true;
+    } else {
+      // Remote best-effort
       try {
-        document.getElementById("resultsBox").textContent = JSON.stringify(JSON.parse(ev.data), null, 2);
+        const r = await fetch(`${API}/polls/${pollId}`, { cache: "no-store" });
+        if (r.ok) full = await r.json();
+        full.is_local = false;
       } catch {
-        document.getElementById("resultsBox").textContent = ev.data;
+        // If remote fetch fails, show a minimal shell
+        full = { id: pollId, title: "(remote poll)", poll_type: "", options: [], is_local: false };
       }
-    });
-    es.onerror = () => {
-      document.getElementById("resultsBox").textContent = "Stream disconnected.";
-    };
+    }
+
+    if (pollTitle) pollTitle.textContent = full?.title || "(untitled)";
+    if (pollMeta) pollMeta.textContent = `${full?.poll_type || ""}${isLocal ? " • Local" : " • Remote"}`;
+
+    // Vote buttons
+    if (vb) {
+      (full?.options || []).forEach(opt => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = opt;
+        b.onclick = () => castVote(full, opt);
+        vb.appendChild(b);
+      });
+    }
+
+    // Results display
+    closeStream();
+
+    if (isLocal) {
+      const res = buildLocalResults(full);
+      if (resultsBox) resultsBox.textContent = JSON.stringify(res, null, 2);
+    } else {
+      // Remote stream (optional)
+      try {
+        es = new EventSource(`${API}/polls/${pollId}/stream`);
+        es.addEventListener("results", (ev) => {
+          try {
+            const obj = JSON.parse(ev.data);
+            if (resultsBox) resultsBox.textContent = JSON.stringify(obj, null, 2);
+          } catch {
+            if (resultsBox) resultsBox.textContent = ev.data;
+          }
+        });
+        es.onerror = () => {
+          if (resultsBox) resultsBox.textContent = "Stream disconnected.";
+        };
+      } catch {
+        if (resultsBox) resultsBox.textContent = "Live results unavailable.";
+      }
+    }
   }
 
-  async function castVote(pollId, choice){
+  // =========================
+  // Vote (Local-first; remote optional)
+  // =========================
+  async function castVote(poll, choice) {
+    const pollId = poll.id;
+    const isLocal = !!poll.is_local || String(pollId).startsWith("local_");
+    const out = document.getElementById("voteOut");
+    const resultsBox = document.getElementById("resultsBox");
+
+    if (out) out.textContent = "Submitting…";
+
+    if (isLocal) {
+      const token = ensureLocalToken(pollId);
+      setLocalVote(pollId, token, choice, poll.options || []);
+      if (out) out.textContent = "Voted (local).";
+      const res = buildLocalResults(poll);
+      if (resultsBox) resultsBox.textContent = JSON.stringify(res, null, 2);
+      return;
+    }
+
+    // Remote best-effort
     const voter_token = getToken(pollId);
     const payload = voter_token ? { choice, voter_token } : { choice };
 
-    const r = await fetch(`${API}/polls/${pollId}/vote`, {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify(payload)
-    });
-
-    const data = await r.json().catch(()=>({}));
-    if (data?.voter_token) setToken(pollId, data.voter_token);
-    document.getElementById("voteOut").textContent = "Vote saved.";
-  }
-
-  // auto-open poll from hash
-  async function openFromHash(){
-    const pollId = location.hash.replace("#","");
-    if (!pollId) return;
-
     try {
-      const r = await fetch(`${API}/polls`, { cache:"no-store" });
-      const polls = await r.json();
-      const found = polls.find(x => x.id === pollId);
-      if (found) openPoll(found);
-    } catch {}
-  }
+      const r = await fetch(`${API}/polls/${pollId}/vote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
-  window.addEventListener("hashchange", openFromHash);
+      const rawBody = await r.text();
+      if (!r.ok) {
+        if (out) out.textContent = `Vote failed (${r.status}).`;
+        console.log("Vote failed:", r.status, rawBody);
+        return;
+      }
 
-  // ---- QR modal ----
-  const qrModal = document.getElementById("qrModal");
-  const qrBox = document.getElementById("qrBox");
-  const qrClose = document.getElementById("qrClose");
-  const qrLinkText = document.getElementById("qrLinkText");
-  const copyLinkBtn = document.getElementById("copyLinkQr");
-  const copyStatus = document.getElementById("copyStatus");
+      let data = null;
+      try { data = JSON.parse(rawBody); } catch { data = null; }
+      if (data?.voter_token) setToken(pollId, data.voter_token);
 
-  function openQr(link){
-    qrBox.innerHTML = "";
-    copyStatus.textContent = "";
-    qrLinkText.textContent = link;
-
-    try{
-      new QRCode(qrBox, { text: link, width: 240, height: 240, correctLevel: QRCode.CorrectLevel.M });
-    } catch (e){
-      qrBox.textContent = "QR failed to render (missing qrcode.min.js).";
+      if (out) out.textContent = "Voted.";
+    } catch (e) {
+      if (out) out.textContent = "Vote failed (network error).";
       console.log(e);
     }
-
-    qrModal.style.display = "block";
   }
 
-  function closeQr(){ qrModal.style.display = "none"; }
-  qrClose.addEventListener("click", closeQr);
-  qrModal.addEventListener("click", (e)=>{ if (e.target === qrModal) closeQr(); });
+  // =========================
+  // Main init (runs after app.html injected)
+  // =========================
+  function initLegacyUI() {
+    // Guard: injected HTML must exist
+    if (!document.getElementById("createPoll")) return;
 
-  copyLinkBtn.addEventListener("click", async ()=>{
-    const link = qrLinkText.textContent || "";
-    try{
-      await navigator.clipboard.writeText(link);
-      copyStatus.textContent = "Copied.";
-    } catch {
-      copyStatus.textContent = "Copy failed — press and hold the link to copy.";
+    if (window.__initLegacyUI_ran) return;
+    window.__initLegacyUI_ran = true;
+
+    // Optional editor
+    try { initQuestionEditor(); } catch {}
+
+    // Advanced settings UI
+    const apiBase = document.getElementById("apiBase");
+    const apiStatus = document.getElementById("apiStatus");
+    if (apiBase) apiBase.value = API;
+
+    const saveApi = document.getElementById("saveApi");
+    if (saveApi) {
+      saveApi.onclick = async () => {
+        const v = (apiBase?.value || "").trim().replace(/\/+$/, "");
+        if (!v) return;
+        API = v;
+        localStorage.setItem(LS_API, API);
+        if (apiStatus) apiStatus.textContent = "Saved. Checking…";
+        await ping();
+        await refreshPolls();
+      };
     }
-  });
 
-  document.getElementById("shareBtn").addEventListener("click", ()=>{
-    const link = currentPollId ? pollLink(currentPollId) : window.location.href;
-    openQr(link);
-  });
+    // Close poll view
+    const closeBtn = document.getElementById("closePoll");
+    if (closeBtn) {
+      closeBtn.onclick = () => {
+        closeStream();
+        const pollView = document.getElementById("pollView");
+        if (pollView) pollView.style.display = "none";
+      };
+    }
 
-  // ---- PWA ----
-  if ("serviceWorker" in navigator){
-    navigator.serviceWorker.register("/sw.js").catch(()=>{});
+    // Refresh
+    const refreshBtn = document.getElementById("refreshPolls");
+    if (refreshBtn) refreshBtn.onclick = refreshPolls;
+
+    // Search
+    const searchEl = document.getElementById("search");
+    if (searchEl) searchEl.addEventListener("input", refreshPolls);
+
+    // Create (LOCAL-FIRST)
+    const createBtn = document.getElementById("createPoll");
+    if (createBtn) {
+      createBtn.onclick = async () => {
+        const out = document.getElementById("createOut");
+        const btn = document.getElementById("createPoll");
+        if (!out || !btn) return;
+
+        const title = (document.getElementById("newTitle")?.value || "").trim();
+        const poll_type = document.getElementById("newType")?.value || "YES_NO";
+        const raw = (document.getElementById("newOptions")?.value || "")
+          .split("\n").map(x => x.trim()).filter(Boolean);
+        const options = (poll_type === "YES_NO" && raw.length === 0) ? ["Yes", "No"] : raw;
+
+        const question_html = (quill && quill.root) ? quill.root.innerHTML : "";
+
+        if (!title) { out.textContent = "Title required."; return; }
+        if (options.length < 2) { out.textContent = "Need at least 2 options."; return; }
+
+        btn.disabled = true;
+        out.textContent = "Creating (local)…";
+
+        try {
+          const id = "local_" + makeId();
+          const localPoll = {
+            id,
+            title,
+            poll_type,
+            options,
+            question_html,
+            created_at: Date.now(),
+            is_local: true,
+            status: "OPEN",
+          };
+
+          addLocalPoll(localPoll);
+
+          out.textContent = "Created (local).";
+
+          const tEl = document.getElementById("newTitle");
+          const oEl = document.getElementById("newOptions");
+          if (tEl) tEl.value = "";
+          if (oEl) oEl.value = "";
+
+          await refreshPolls();
+          await openPoll(localPoll);
+        } finally {
+          btn.disabled = false;
+        }
+      };
+    }
+
+    // Share
+    const shareBtn = document.getElementById("shareBtn");
+    if (shareBtn) {
+      shareBtn.onclick = () => {
+        const link = currentPollId ? pollLink(currentPollId) : window.location.href;
+        openQr(link);
+      };
+    }
+
+    // QR modal wiring
+    const qrClose = document.getElementById("qrClose");
+    if (qrClose) {
+      qrClose.onclick = () => {
+        const modal = document.getElementById("qrModal");
+        if (modal) modal.style.display = "none";
+      };
+    }
+
+    const copyLink = document.getElementById("copyLink");
+    const copyLinkQr = document.getElementById("copyLinkQr");
+    const copyStatus = document.getElementById("copyStatus");
+
+    async function doCopy() {
+      const link = currentPollId ? pollLink(currentPollId) : window.location.href;
+      const ok = await copyToClipboard(link);
+      if (copyStatus) copyStatus.textContent = ok ? "Copied." : "Copy failed.";
+      setTimeout(() => { if (copyStatus) copyStatus.textContent = ""; }, 1200);
+    }
+
+    if (copyLink) copyLink.onclick = doCopy;
+    if (copyLinkQr) copyLinkQr.onclick = doCopy;
+
+    // Boot
+    showApiCardIfNeeded();
+    ping().catch(() => {});
+    refreshPolls().then(openFromHash).catch(() => {});
   }
 
-  showApiCardIfNeeded();
-  ping().catch(()=>{});
-  refreshPolls().then(openFromHash).catch(()=>{});
+  // IMPORTANT: event hook is inside this IIFE (scope-safe)
+  window.addEventListener("legacy:injected", initLegacyUI);
+})();

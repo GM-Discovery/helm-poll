@@ -17,8 +17,6 @@
   <!-- QR library (make sure this file exists in /opt/bread-poll-mvp/web/qrcode.min.js) -->
   <script src="/qrcode.min.js"></script>
 
-  <link rel="stylesheet" href="/app.css">
-
 </head>
 
 <body>
@@ -48,6 +46,8 @@
     <div class="muted2" style="font-size:12px; margin-bottom:12px;">Make a poll, then share the link or QR.</div>
     <div class="grid">
       <input id="newTitle" placeholder="Poll title" />
+      <label style="display:block; margin-top:12px; font-weight:600;">Question / Details</label>
+      <div id="questionEditor" style="margin-top:8px;"></div>
 
       <div class="row">
         <label class="muted" style="min-width:52px;">Type</label>
@@ -56,7 +56,8 @@
           <option value="SINGLE_SELECT">SINGLE_SELECT</option>
         </select>
       </div>
-
+      <label style="display:block; margin-top:12px; font-weight:600;">Question / Details</label>
+      <div id="questionEditor" style="margin-top:8px;"></div>
       <textarea id="newOptions" rows="3" placeholder="Options (one per line). Leave blank for YES_NO."></textarea>
 
       <button id="createPoll" type="button">Create</button>
@@ -129,7 +130,6 @@
     </div>
   </div>
 
-<script defer src="/app.js"></script>
     </div>
   </div>
 </body>

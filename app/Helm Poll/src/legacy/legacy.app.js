@@ -529,6 +529,32 @@
         await ping();
         await refreshPolls();
       };
+        // Publish-to-exchange toggle: reveal the hidden API settings card
+      
+      const publishEl = document.getElementById("publishToExchange");
+      const apiCardEl = document.getElementById("apiCard");
+
+      const syncPublishUi = () => {
+        if (!apiCardEl) return;
+
+        if (publishEl && publishEl.checked) {
+          apiCardEl.style.display = "block";
+
+          // Make it feel like a “pop-up”: scroll to it and focus the API box.
+          apiCardEl.scrollIntoView({ behavior: "smooth", block: "start" });
+          setTimeout(() => {
+            const apiBaseEl = document.getElementById("apiBase");
+            if (apiBaseEl) apiBaseEl.focus();
+          }, 50);
+        } else {
+          // Keep old behavior: only show if ?settings=1
+          const params = new URLSearchParams(location.search);
+          apiCardEl.style.display = (params.get("settings") === "1") ? "block" : "none";
+        }
+      };
+
+        if (publishEl) publishEl.onchange = syncPublishUi;
+        syncPublishUi();
     }
 
     // Close poll view

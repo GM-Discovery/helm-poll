@@ -29,7 +29,7 @@
   function getTokens() {
     try {
       return JSON.parse(localStorage.getItem(LS_TOKENS) || "{}");
-    } catch {
+    } catch (e) {
       return {};
     }
   }
@@ -60,7 +60,7 @@
   function loadLocalPolls() {
     try {
       return JSON.parse(localStorage.getItem(LS_LOCAL_POLLS) || "[]");
-    } catch {
+    } catch (e) {
       return [];
     }
   }
@@ -86,7 +86,7 @@
   function loadLocalVotesAll() {
     try {
       return JSON.parse(localStorage.getItem(LS_LOCAL_VOTES) || "{}");
-    } catch {
+    } catch (e) {
       return {};
     }
   }
@@ -190,7 +190,7 @@
       if (!r.ok) throw new Error(String(r.status));
       if (apiStatus) apiStatus.textContent = "Connected.";
       return true;
-    } catch {
+    } catch (e) {
       if (apiStatus) apiStatus.textContent = "Not connected.";
       return false;
     }
@@ -240,7 +240,7 @@
     try {
       await navigator.clipboard.writeText(text);
       return true;
-    } catch {
+    } catch (e) {
       try {
         const ta = document.createElement("textarea");
         ta.value = text;
@@ -249,7 +249,7 @@
         document.execCommand("copy");
         ta.remove();
         return true;
-      } catch {
+      } catch (e) {
         return false;
       }
     }
@@ -352,7 +352,7 @@
       }
 
       renderPollList(merged);
-    } catch {
+    } catch (e) {
       // ignore; local already shown
     }
   }
@@ -389,11 +389,10 @@
     const vb = document.getElementById("voteButtons");
     const shareLinkEl = document.getElementById("shareLink");
     if (shareLinkEl) {
-      const url = location.origin + location.pathname + "#poll=" + poll.id;
+      const url = location.origin + location.pathname + "#poll=" + pollId;
       shareLinkEl.href = url;
       shareLinkEl.textContent = url;
     }
-
 
     if (pollView) pollView.style.display = "block";
     if (voteOut) voteOut.textContent = "";
@@ -411,14 +410,14 @@
         const r = await fetch(`${API}/polls/${pollId}`, { cache: "no-store" });
         if (r.ok) full = await r.json();
         full.is_local = false;
-      } catch {
+      } catch (e) {
         // If remote fetch fails, show a minimal shell
         full = { id: pollId, title: "(remote poll)", poll_type: "", options: [], is_local: false };
       }
     }
 
-    if (pollTitle) pollTitle.textContent = full?.title || "(untitled)";
-    if (pollMeta) pollMeta.textContent = `${full?.poll_type || ""}${isLocal ? " • Local" : " • Remote"}`;
+    if (pollTitle) pollTitle.textContent = (full && full.title) ? full.title : "(untitled)";
+    if (pollMeta) pollMeta.textContent = `${(full && full.poll_type) ? full.poll_type : ""}${isLocal ? " • Local" : " • Remote"}`;
 
     // Vote buttons
     if (vb) {
@@ -445,14 +444,14 @@
           try {
             const obj = JSON.parse(ev.data);
             if (resultsBox) resultsBox.textContent = JSON.stringify(obj, null, 2);
-          } catch {
+          } catch (e) {
             if (resultsBox) resultsBox.textContent = ev.data;
           }
         });
         es.onerror = () => {
           if (resultsBox) resultsBox.textContent = "Stream disconnected.";
         };
-      } catch {
+      } catch (e) {
         if (resultsBox) resultsBox.textContent = "Live results unavailable.";
       }
     }
@@ -675,3 +674,4 @@
   // IMPORTANT: event hook is inside this IIFE (scope-safe)
   window.addEventListener("legacy:injected", initLegacyUI);
 })();
+

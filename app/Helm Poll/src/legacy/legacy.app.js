@@ -387,6 +387,13 @@
     const voteOut = document.getElementById("voteOut");
     const resultsBox = document.getElementById("resultsBox");
     const vb = document.getElementById("voteButtons");
+    const shareLinkEl = document.getElementById("shareLink");
+    if (shareLinkEl) {
+      const url = location.origin + location.pathname + "#poll=" + poll.id;
+      shareLinkEl.href = url;
+      shareLinkEl.textContent = url;
+    }
+
 
     if (pollView) pollView.style.display = "block";
     if (voteOut) voteOut.textContent = "";

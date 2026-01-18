@@ -75,6 +75,12 @@
     saveLocalPolls(polls);
   }
 
+  function removeLocalPoll(id) {
+    const polls = loadLocalPolls();
+    const next = polls.filter(p => p.id !== id);
+    saveLocalPolls(next);
+  }
+
   function getLocalPoll(id) {
     const polls = loadLocalPolls();
     return polls.find(p => p.id === id) || null;
@@ -151,6 +157,21 @@
       counts: counts,
     };
   }
+ 
+  // =========================
+  // Exchange operator write-gate (TEMPORARY)
+  // =========================
+  // Purpose: prevent unauthenticated public writes to the exchange (anti-vandalism).
+  // This is NOT identity, legitimacy, delta, or vote-weighting.
+  // Replace later with governance-native mechanisms.
+  function getExchangeBasicAuthHeaderOrNull() {
+    const user = (localStorage.getItem("exchange_basic_user") || "").trim();
+    const pass = (localStorage.getItem("exchange_basic_pass") || "").trim();
+    if (!user || !pass) return null;
+    // btoa expects latin1; keep creds ASCII for now.
+    return "Basic " + btoa(user + ":" + pass);
+  }
+
 
   // =========================
   // UI helpers
@@ -342,12 +363,13 @@
       const r = await fetch(`${API}/polls`, { cache: "no-store" });
       if (!r.ok) return;
       const remote = await r.json();
-      if (!Array.isArray(remote)) return;
+      const remotePolls = remote?.polls;
+      if (!Array.isArray(remotePolls)) return;
 
       const localIds = new Set(local.map(p => p.id));
       const merged = [...local];
 
-      for (const p of remote) {
+      for (const p of remotePolls) {
         if (!localIds.has(p.id)) merged.push({ ...p, is_local: false });
       }
 
@@ -360,6 +382,7 @@
   // =========================
   // Open poll (Local-first)
   // =========================
+  
   function openFromHash() {
     const m = /#poll=([^&]+)/.exec(window.location.hash || "");
     if (!m) return;
@@ -388,6 +411,8 @@
     const resultsBox = document.getElementById("resultsBox");
     const vb = document.getElementById("voteButtons");
     const shareLinkEl = document.getElementById("shareLink");
+    const assertBtn = document.getElementById("assertBtn");
+    const assertOut = document.getElementById("assertOut");
     if (shareLinkEl) {
       const url = location.origin + location.pathname + "#poll=" + pollId;
       shareLinkEl.href = url;
@@ -398,6 +423,7 @@
     if (voteOut) voteOut.textContent = "";
     if (resultsBox) resultsBox.textContent = "";
     if (vb) vb.innerHTML = "";
+    if (assertOut) assertOut.textContent = "";
 
     let full = p;
 
@@ -405,27 +431,30 @@
       full = getLocalPoll(pollId) || p;
       full.is_local = true;
     } else {
-      // Remote best-effort
-      try {
-        const r = await fetch(`${API}/polls/${pollId}`, { cache: "no-store" });
-        if (r.ok) full = await r.json();
-        full.is_local = false;
-      } catch (e) {
-        // If remote fetch fails, show a minimal shell
-        full = { id: pollId, title: "(remote poll)", poll_type: "", options: [], is_local: false };
-      }
+      // Remote best-effort: exchange doesn't support GET /api/polls/:id.
+      // We show a shell and let the SSE snapshot ("poll" event) fill in details.
+      full = { ...p, id: pollId, is_local: false };
     }
 
+    const isLocalNow = !!full?.is_local || String(full?.id).startsWith("local_");
+
+    const pollTypeText = full?.poll_type ?? full?.meta?.poll_type ?? "";
     if (pollTitle) pollTitle.textContent = (full && full.title) ? full.title : "(untitled)";
-    if (pollMeta) pollMeta.textContent = `${(full && full.poll_type) ? full.poll_type : ""}${isLocal ? " • Local" : " • Remote"}`;
+    if (pollMeta) pollMeta.textContent = `${pollTypeText}${isLocalNow ? " • Local" : " • Remote"}`;
+
+    // Assertion-to-exchange UI (local drafts only)
+    if (assertBtn) {
+      assertBtn.style.display = isLocalNow ? "" : "none";
+      assertBtn.onclick = () => assertPollToExchange(full);
+    }
 
     // Vote buttons
     if (vb) {
       (full?.options || []).forEach(opt => {
         const b = document.createElement("button");
         b.type = "button";
-        b.textContent = opt;
-        b.onclick = () => castVote(full, opt);
+        b.textContent = opt?.label ?? opt;
+        b.onclick = () => castVote(full, opt?.label ?? opt);
         vb.appendChild(b);
       });
     }
@@ -433,13 +462,35 @@
     // Results display
     closeStream();
 
-    if (isLocal) {
+    if (isLocalNow) {
       const res = buildLocalResults(full);
       if (resultsBox) resultsBox.textContent = JSON.stringify(res, null, 2);
     } else {
       // Remote stream (optional)
       try {
         es = new EventSource(`${API}/polls/${pollId}/stream`);
+        es.addEventListener("poll", (ev) => {
+          try {
+            const obj = JSON.parse(ev.data);
+            if (obj?.poll) {
+              full = { ...obj.poll, is_local: false };
+              if (pollTitle) pollTitle.textContent = full.title || "(untitled)";
+              const pt = full?.meta?.poll_type ?? full?.poll_type ?? "";
+              if (pollMeta) pollMeta.textContent = `${pt} • Remote`;
+              if (vb) {
+                vb.innerHTML = "";
+                (full.options || []).forEach(opt => {
+                  const b = document.createElement("button");
+                  b.type = "button";
+                  b.textContent = opt?.label ?? opt;
+                  b.onclick = () => castVote(full, opt?.label ?? opt);
+                  vb.appendChild(b);
+                });
+              }
+            }
+            if (obj?.results && resultsBox) resultsBox.textContent = JSON.stringify(obj.results, null, 2);
+          } catch (_) {}
+        });
         es.addEventListener("results", (ev) => {
           try {
             const obj = JSON.parse(ev.data);
@@ -460,6 +511,68 @@
   // =========================
   // Vote (Local-first; remote optional)
   // =========================
+  async function assertPollToExchange(localPoll) {
+    const out = document.getElementById("assertOut");
+    if (out) out.textContent = "Asserting…";
+
+    const pollId = localPoll?.id;
+    const isLocal = !!localPoll?.is_local || String(pollId).startsWith("local_");
+    if (!isLocal) { if (out) out.textContent = "Already asserted."; return; }
+
+    const auth = getExchangeBasicAuthHeaderOrNull();
+    if (!auth) { if (out) out.textContent = "Missing exchange credentials."; return; }
+
+    // Build exchange-shaped canonical payload from existing local fields (no re-asking)
+    const payload = {
+      title: localPoll.title,
+      description: localPoll.question_html || "",
+      type: "single",
+      options: (localPoll.options || []).map(label => ({ label: String(label) })),
+      meta: {
+        poll_type: localPoll.poll_type || "",
+        question_html: localPoll.question_html || "",
+        created_local_id: pollId,
+        asserted_at: Date.now(),
+      },
+    };
+
+    try {
+      const r = await fetch(`${API}/polls`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": auth },
+        body: JSON.stringify(payload),
+      });
+
+      const raw = await r.text();
+      if (!r.ok) {
+        if (out) out.textContent = `Assert failed (${r.status}).`;
+        console.log("Assert failed:", r.status, raw);
+        return;
+      }
+
+      const data = JSON.parse(raw);
+      const remotePoll = data?.poll;
+      if (!remotePoll?.id) {
+        if (out) out.textContent = "Assert ok, but response missing poll id.";
+        console.log("Assert response:", data);
+        return;
+      }
+
+      // Replace local draft with a local cached copy of remote poll
+      // (So your UI can treat it as non-local and votes go remote.)
+      try { removeLocalPoll(pollId); } catch (_) {}
+      addLocalPoll({ ...remotePoll, is_local: false });
+
+      if (out) out.textContent = "Asserted.";
+      await refreshPolls();
+      await openPoll({ id: remotePoll.id, is_local: false });
+    } catch (e) {
+      if (out) out.textContent = "Assert failed (network error).";
+      console.log(e);
+    }
+  }
+
+ 
   async function castVote(poll, choice) {
     const pollId = poll.id;
     const isLocal = !!poll.is_local || String(pollId).startsWith("local_");
@@ -478,13 +591,52 @@
     }
 
     // Remote best-effort
+    const auth = getExchangeBasicAuthHeaderOrNull();
     const voter_token = getToken(pollId);
-    const payload = voter_token ? { choice, voter_token } : { choice };
+
+    // Map the clicked label -> exchange option_id.
+    // Exchange polls use option objects: { id: "1", label: "Yes" }.
+    // Local polls use string options; on assert we preserve ordering.
+    const opts = (poll.options || []);
+    const idx = opts.findIndex(o => (o?.label ?? o) === choice);
+    if (idx < 0) { if (out) out.textContent = "Vote failed (bad option)."; return; }
+
+    const optObj = opts[idx];
+    const option_id = (optObj && typeof optObj === "object" && optObj.id != null)
+      ? String(optObj.id)
+      : String(idx + 1); // fallback to 1-based ordering
+    const payload = voter_token ? { option_id, voter_token } : { option_id };
 
     try {
       const r = await fetch(`${API}/polls/${pollId}/vote`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+
+        // OPERATOR WRITE-GATE (TEMPORARY)
+        // Purpose: prevent unauthenticated public writes to the exchange (anti-vandalism).
+        // This is NOT identity, legitimacy, delta, or vote-weighting.
+        //
+        // Replace later with governance-native mechanisms:
+        // 1) Poll-scoped capability tokens issued at ASSERT:
+        //    - manage_token (COOL / CLOSE / steward actions for this poll)
+        //    - appeal_token (APPEAL for this poll)
+        // 2) Delegation + recall/override during COOLING (constituent correction signal)
+        // 3) Steward rekey via electorate vote (supermajority + quorum + timeout)
+        // 4) Validator/claim attestations that grant *power points* (capped per person) and
+        //    feed exchange-to-exchange legitimacy comparisons (delta vectors).
+        //
+        // Until those exist, Basic Auth is just an operator gate on writes.
+        // Reads can remain public.
+
+        headers: auth
+          ? {
+              "Content-Type": "application/json",
+              "Authorization": auth,
+            }
+          : {
+              "Content-Type": "application/json",
+            },
+
+
         body: JSON.stringify(payload),
       });
 
@@ -674,4 +826,3 @@
   // IMPORTANT: event hook is inside this IIFE (scope-safe)
   window.addEventListener("legacy:injected", initLegacyUI);
 })();
-

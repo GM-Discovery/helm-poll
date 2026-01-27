@@ -14,7 +14,7 @@
   // =========================
   const params = new URLSearchParams(location.search);
   const apiOverride = params.get("api");
-  let API = apiOverride || localStorage.getItem(LS_API) || "http://127.0.0.1:8787/api";
+  let API = apiOverride || localStorage.getItem(LS_API) || "https://exchange.breadstandard.com/api";
 
   // =========================
   // Runtime state
@@ -22,6 +22,38 @@
   let es = null; // EventSource (remote live stream only)
   let currentPollId = null;
   let quill = null; // optional Quill instance
+
+  // --- Exchange Stamp storage keys ---
+  const LS_EXCHANGE_STAMPS = "exchange_stamps";
+  const LS_EXCHANGE_PERSONA_ID = "exchange_persona_id";
+
+  // Read the local stamp pool (array of strings)
+  function getExchangeStampPool() {
+    try {
+      const raw = localStorage.getItem(LS_EXCHANGE_STAMPS);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  // Save/merge stamps without duplicates
+  function addStampsToPool(newStamps) {
+    const cur = getExchangeStampPool();
+    const set = new Set(cur);
+    for (const s of (newStamps || [])) {
+      if (typeof s === "string" && s.startsWith("s_")) set.add(s);
+    }
+    localStorage.setItem(LS_EXCHANGE_STAMPS, JSON.stringify(Array.from(set)));
+  }
+
+  // Pick one stamp (random) for later use (voting, future)
+  function pickOneStampOrNull() {
+    const pool = getExchangeStampPool();
+    if (!pool.length) return null;
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
 
   // =========================
   // Helpers: tokens
@@ -297,6 +329,34 @@
     }
   }
 
+  async function fetchStampsFromExchange() {
+    const auth = getExchangeBasicAuthHeaderOrNull();
+    if (!auth) throw new Error("Missing Exchange Basic Auth in localStorage.");
+
+    const r = await fetch("https://exchange.breadstandard.com/api/stamp", {
+      method: "POST",
+      headers: {
+        "Authorization": auth,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+
+    // If auth is wrong, Exchange is behind Caddy so you’ll see 401
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new Error(`Stamp request failed (${r.status}). ${t}`);
+    }
+
+    const data = await r.json();
+
+    // Expected: { ok:true, persona_id, issued:[...], ... }
+    if (data && data.persona_id) localStorage.setItem(LS_EXCHANGE_PERSONA_ID, data.persona_id);
+    if (data && Array.isArray(data.issued) && data.issued.length) addStampsToPool(data.issued);
+
+    return data;
+  }
+
   // =========================
   // Poll list rendering
   // =========================
@@ -522,6 +582,22 @@
     const auth = getExchangeBasicAuthHeaderOrNull();
     if (!auth) { if (out) out.textContent = "Missing exchange credentials."; return; }
 
+    // --- NEW: Fetch stamps once (human-triggered, not on app open) ---
+    // This proves stamp issuance works, and stores the pool in localStorage.
+    try {
+      const before = getExchangeStampPool().length;
+      if (!before) {
+        if (out) out.textContent = "Fetching stamps…";
+        await fetchStampsFromExchange();
+      }
+      const after = getExchangeStampPool().length;
+      if (out) out.textContent = `Stamps stored: ${after}. Asserting…`;
+    } catch (e) {
+      // Stamp fetch failure should not block assertion (for now).
+      console.warn("Stamp fetch failed:", e);
+      if (out) out.textContent = "Stamp fetch failed (continuing assert)…";
+    }
+
     // Build exchange-shaped canonical payload from existing local fields (no re-asking)
     const payload = {
       title: localPoll.title,
@@ -559,7 +635,6 @@
       }
 
       // Replace local draft with a local cached copy of remote poll
-      // (So your UI can treat it as non-local and votes go remote.)
       try { removeLocalPoll(pollId); } catch (_) {}
       addLocalPoll({ ...remotePoll, is_local: false });
 
@@ -572,6 +647,23 @@
     }
   }
 
+  async function getOrFetchOneStampOrNull() {
+    // If we already have stamps, pick one.
+    const pool = getExchangeStampPool();
+    if (pool.length) return pickOneStampOrNull();
+
+    // If we have creds, try to fetch stamps.
+    const auth = getExchangeBasicAuthHeaderOrNull();
+    if (!auth) return null;
+
+    try {
+      await fetchStampsFromExchange();
+      return pickOneStampOrNull();
+    } catch (e) {
+      console.warn("Stamp fetch failed:", e);
+      return null;
+    }
+  }
  
   async function castVote(poll, choice) {
     const pollId = poll.id;
@@ -608,6 +700,16 @@
     const payload = voter_token ? { option_id, voter_token } : { option_id };
 
     try {
+      // --- STAMP (behind the curtain) ---
+      // If we have no stamps yet, try to fetch them.
+      // Then pick one stamp to use for this vote.
+      const stamp = await getOrFetchOneStampOrNull();
+      if (!stamp) {
+        if (out) out.textContent = "Vote blocked: could not obtain stamp.";
+        console.log("Vote blocked: no stamp available (missing creds or stamp fetch failed).");
+        return;
+      }
+
       const r = await fetch(`${API}/polls/${pollId}/vote`, {
         method: "POST",
 
@@ -631,11 +733,12 @@
           ? {
               "Content-Type": "application/json",
               "Authorization": auth,
+              "X-Stamp": stamp,
             }
           : {
               "Content-Type": "application/json",
+              "X-Stamp": stamp,
             },
-
 
         body: JSON.stringify(payload),
       });
@@ -656,7 +759,7 @@
       if (out) out.textContent = "Vote failed (network error).";
       console.log(e);
     }
-  }
+
 
   // =========================
   // Main init (runs after app.html injected)
@@ -822,6 +925,25 @@
     ping().catch(() => {});
     refreshPolls().then(openFromHash).catch(() => {});
   }
+
+  // Try to get stamps once on startup, BUT ONLY if exchange creds exist.
+  // This prevents creating personas/stamps just because the app was opened.
+  (async () => {
+    try {
+      // If user hasn't configured exchange creds, don't do anything.
+      const auth = getExchangeBasicAuthHeaderOrNull();
+      if (!auth) return;
+
+      // Optional: only fetch if the user has explicitly enabled publish mode
+      const publishEl = document.getElementById("publishToExchange");
+      if (publishEl && !publishEl.checked) return;
+
+      const pool = getExchangeStampPool();
+      if (!pool.length) await fetchStampsFromExchange();
+    } catch (e) {
+      console.warn("Exchange stamp init failed:", e);
+    }
+  })();
 
   // IMPORTANT: event hook is inside this IIFE (scope-safe)
   window.addEventListener("legacy:injected", initLegacyUI);

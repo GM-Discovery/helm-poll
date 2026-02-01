@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Bread Poll</title>
+  <title>Helm Poll</title>
 
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="Bread Poll">
+  <meta name="apple-mobile-web-app-title" content="Helm Poll">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 
   <link rel="manifest" href="/manifest.json">
@@ -16,123 +16,210 @@
 
   <!-- QR library (make sure this file exists in /opt/bread-poll-mvp/web/qrcode.min.js) -->
   <script src="/qrcode.min.js"></script>
-
 </head>
 
 <body>
   <div class="screen">
     <div class="wrap" id="app">
-  <div class="topbar">
-    <div>
-      <h1>Bread Poll</h1>
-      <div class="muted">Create → Vote → Share → Live results.</div>
-    </div>
-    <button id="shareBtn" class="btn-small btn-ghost" type="button" style="height:42px; width:auto;">Share</button>
-  </div>
 
-  <!-- Advanced settings hidden unless ?settings=1 -->
-  <div class="card" id="apiCard" style="display:none;">
-    <div class="row">
-      <label class="muted" style="min-width:180px;">Advanced settings</label>
-      <input id="apiBase" placeholder="Custom API endpoint (advanced use)" />
-      <button id="saveApi" type="button">Save</button>
-      <span id="apiStatus" class="muted"></span>
-    </div>
-  </div>
+      <!-- Top header + global nav (always visible) -->
+      <div class="topbar" style="align-items:flex-start;">
+        <div style="flex:1;">
+          <!-- Small brand/title -->
+          <h1 style="margin:0; font-size:16px; font-weight:800; line-height:1.1;">Helm Poll</h1>
+          <div class="muted" style="font-size:12px; margin-top:6px;">Create → Vote → Share → Live results.</div>
 
-  <!-- Create -->
-  <div class="card">
-    <h2 style="margin-bottom:6px;">Create</h2>
-    <div class="muted2" style="font-size:12px; margin-bottom:12px;">Make a poll, then share the link or QR.</div>
-    <div class="grid">
-      <input id="newTitle" placeholder="Poll title" />
-      <label style="display:block; margin-top:12px; font-weight:600;">Question / Details</label>
-      <div id="questionEditor" style="margin-top:8px;"></div>
-
-      <div class="row">
-        <label class="muted" style="min-width:52px;">Type</label>
-        <select id="newType" style="max-width:260px;">
-          <option value="YES_NO">YES_NO</option>
-          <option value="SINGLE_SELECT">SINGLE_SELECT</option>
-        </select>
-      </div>
-      <textarea id="newOptions" rows="3" placeholder="Options (one per line). Leave blank for YES_NO."></textarea>
-
-      <button id="createPoll" type="button">Create</button>
-      <div id="createOut" class="muted"></div>
-    </div>
-  </div>
-
-  <!-- Home -->
-  <div class="card" id="homeCard">
-    <div class="topbar">
-      <div>
-        <h2 style="margin:0;">Available Polls</h2>
-        <div class="muted2" style="font-size:12px; margin-top:6px;">Newest first.</div>
-      </div>
-      <button id="refreshPolls" type="button" class="btn-small btn-ghost" style="width:auto; height:42px;">Refresh</button>
-    </div>
-
-    <div style="margin-top:12px;">
-      <input id="search" placeholder="Search polls…" />
-    </div>
-
-    <div id="emptyState" class="muted" style="display:none; padding:14px; text-align:center;">
-      No polls yet. Create one above.
-    </div>
-
-    <div id="pollList" class="grid" style="margin-top:12px;"></div>
-  </div>
-
-  <!-- Poll View -->
-  <div class="card" id="pollView" style="display:none;">
-    <div class="row" style="justify-content:space-between;">
-      <h2 id="pollTitle" style="margin:0;"></h2>
-      <button id="closePoll" type="button">Close</button>
-    </div>
-    <div class="muted" id="pollMeta" style="margin-top:6px;"></div>
-
-    <h3 style="margin-top:16px;">Vote</h3>
-    <div id="voteButtons" class="row"></div>
-    <div class="muted" id="voteOut"></div>
-
-    <h3 style="margin-top:16px;">Results</h3>
-    <pre id="resultsBox">{}</pre>
-
-    <div class="muted" style="margin-top:12px;">
-      Link: <a id="shareLink" href="#" target="_blank" rel="noreferrer"></a>
-      <button id="copyLink" type="button" class="smallBtn" style="margin-left:10px;">Copy</button>
-    </div>
-  </div>
-
-  <button id="assertBtn" type="button">Assert to Exchange</button>
-  <div id="assertOut"></div>
-
-  <!-- QR Share Modal -->
-  <div id="qrModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); padding:24px; z-index:9999;">
-    <div style="max-width:420px; margin:10vh auto; background:#fff; border-radius:16px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,0.18);">
-      <div class="row" style="justify-content:space-between; align-items:center;">
-        <strong>Share</strong>
-        <button id="qrClose" type="button" class="smallBtn" style="padding:8px 12px;">Close</button>
-      </div>
-
-      <p class="muted" style="margin-top:10px;">Scan this QR code to open the poll.</p>
-
-      <div id="qrBox" style="display:flex; justify-content:center; padding:14px;"></div>
-
-      <div style="margin-top:10px;">
-        <div class="muted" style="font-size:12px; word-break:break-all;" id="qrLinkText"></div>
-        <div class="row" style="margin-top:10px;">
-          <button id="copyLinkQr" type="button">Copy Link</button>
+          <!-- Global tabs (always visible) -->
+          <div class="pills" id="globalTabs" style="margin-top:12px;">
+            <button id="tabCreate" class="pill active" type="button" data-tab="create" style="width:auto;">Create Poll</button>
+            <button id="tabPolls" class="pill" type="button" data-tab="polls" style="width:auto;">Polls</button>
+            <button id="tabSettings" class="pill" type="button" data-tab="settings" style="width:auto;">Settings</button>
+          </div>
         </div>
-        <div class="muted" id="copyStatus" style="margin-top:6px; font-size:12px;"></div>
+
+        <!-- Share stays global (behavior unchanged; JS decides what it shares) -->
+        <button id="shareBtn" class="btn-small btn-ghost" type="button" style="height:42px; width:auto;">Share</button>
       </div>
-    </div>
-  </div>
+
+      <!-- ========================= -->
+      <!-- PAGE: CREATE (Home)       -->
+      <!-- ========================= -->
+      <section id="viewCreate">
+        <!-- Advanced settings hidden unless ?settings=1 -->
+        <div class="card" id="apiCard" style="display:none;">
+          <div class="row">
+            <label class="muted" style="min-width:180px;">Advanced settings</label>
+            <input id="apiBase" placeholder="Custom API endpoint (advanced use)" />
+            <button id="saveApi" type="button">Save</button>
+            <span id="apiStatus" class="muted"></span>
+          </div>
+        </div>
+
+        <!-- Create -->
+        <div class="card" id="createCard">
+          <h2 style="margin-bottom:6px;">Create</h2>
+          <div class="muted2" style="font-size:12px; margin-bottom:12px;">Make a poll, then share the link or QR.</div>
+
+          <div class="grid">
+            <input id="newTitle" placeholder="Poll title" />
+
+            <label style="display:block; margin-top:12px; font-weight:600;">Question / Details</label>
+            <div id="questionEditor" style="margin-top:8px;"></div>
+
+            <div class="row">
+              <label class="muted" style="min-width:52px;">Type</label>
+              <select id="newType" style="max-width:260px;">
+                <option value="YES_NO">YES_NO</option>
+                <option value="SINGLE_SELECT">SINGLE_SELECT</option>
+              </select>
+            </div>
+
+            <textarea id="newOptions" rows="3" placeholder="Options (one per line). Leave blank for YES_NO."></textarea>
+
+            <button id="createPoll" type="button">Create</button>
+
+            <!-- Success / status output (existing) -->
+            <div id="createOut" class="muted"></div>
+
+            <!-- Optional: “Go to Polls” button after create (JS decides when to show) -->
+            <button id="goToPolls" type="button" class="btn-ghost" style="display:none;">Go to Polls</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================= -->
+      <!-- PAGE: POLLS               -->
+      <!-- ========================= -->
+      <section id="viewPolls" style="display:none;">
+
+        <!-- Poll List View -->
+        <div class="card" id="pollsListCard">
+          <div class="topbar">
+            <div>
+              <h2 style="margin:0;">Polls</h2>
+              <div class="muted2" style="font-size:12px; margin-top:6px;">Newest first.</div>
+            </div>
+            <button id="refreshPolls" type="button" class="btn-small btn-ghost" style="width:auto; height:42px;">Refresh</button>
+          </div>
+
+          <div style="margin-top:12px;">
+            <input id="search" placeholder="Search polls…" />
+          </div>
+
+          <div id="emptyState" class="muted" style="display:none; padding:14px; text-align:center;">
+            No polls yet. Create one in Create Poll.
+          </div>
+
+          <!-- Make the list scrollable without theme work -->
+          <div style="margin-top:12px; max-height:60vh; overflow:auto;">
+            <div id="pollList" class="grid"></div>
+          </div>
+        </div>
+
+        <!-- Poll Detail View (Single Poll) -->
+        <div class="card" id="pollView" style="display:none;">
+          <div class="row" style="justify-content:space-between; width:100%;">
+            <div style="display:flex; flex-direction:column; gap:6px; min-width: 60%;">
+              <h2 id="pollTitle" style="margin:0;"></h2>
+
+              <!-- Prominent status line (JS populates #pollMeta today; keep ID, but give it room) -->
+              <div class="muted" id="pollMeta" style="margin-top:6px; font-size:14px;"></div>
+            </div>
+
+            <div class="row" style="justify-content:flex-end;">
+              <!-- Back control required -->
+              <button id="backToList" type="button" class="btn-small btn-ghost" style="width:auto; height:42px;">Back to list</button>
+              <!-- Existing close button retained -->
+              <button id="closePoll" type="button" class="btn-small btn-ghost" style="width:auto; height:42px;">Close</button>
+            </div>
+          </div>
+
+          <!-- Description (if present). JS can fill this, or ignore if it already uses pollMeta. -->
+          <div id="pollDescription" class="muted2" style="margin-top:12px; display:none;"></div>
+
+          <hr />
+
+          <h3 style="margin-top:8px;">Vote</h3>
+          <div id="voteButtons" class="row"></div>
+          <div class="muted" id="voteOut"></div>
+
+          <h3 style="margin-top:16px;">Results</h3>
+          <pre id="resultsBox">{}</pre>
+
+          <div class="muted" style="margin-top:12px;">
+            Link: <a id="shareLink" href="#" target="_blank" rel="noreferrer"></a>
+            <button id="copyLink" type="button" class="smallBtn" style="margin-left:10px;">Copy</button>
+          </div>
+
+          <hr />
+
+          <!-- Assert moved into Poll Detail (required) -->
+          <button id="assertBtn" type="button">Assert to Exchange</button>
+          <div id="assertStatus" class="muted" style="margin-top:8px;"></div>
+            Votes are not counted unless asserted to an "Exchange."
+          </div>
+          <div id="assertOut"></div>
+        </div>
+
+      </section>
+
+      <!-- ========================= -->
+      <!-- PAGE: SETTINGS / IDENTITY -->
+      <!-- ========================= -->
+      <section id="viewSettings" style="display:none;">
+        <div class="card" id="settingsCard">
+          <h2 style="margin-bottom:6px;">Settings / Identity</h2>
+          <div class="muted2" style="font-size:12px; margin-bottom:12px;">
+            Minimal in Phase 1. Intended to split later.
+          </div>
+
+          <h3 style="margin-top:6px;">Stamp Status</h3>
+          <!-- JS can populate these if available; otherwise show fallback -->
+          <div id="stampStatus" class="muted">No stamp loaded.</div>
+
+          <div id="stampDetails" class="muted2" style="margin-top:10px; display:none;">
+            <div><strong>Token present:</strong> <span id="stampTokenPresent">unknown</span></div>
+            <div><strong>Weight:</strong> <span id="stampWeight">unknown</span></div>
+            <div><strong>Tags:</strong> <span id="stampTags">unknown</span></div>
+          </div>
+
+          <hr />
+
+          <h3>Admin Mode (future)</h3>
+          <div class="muted2" style="font-size:12px; margin-bottom:10px;">
+            Phase 1 rule: UI-only toggle. No auth changes. No password stored.
+          </div>
+
+          <button id="adminToggle" type="button" class="btn-ghost">Enable Admin Mode (UI only)</button>
+          <div id="adminStatus" class="muted" style="margin-top:10px;">Admin mode disabled.</div>
+        </div>
+      </section>
+
+      <!-- QR Share Modal (unchanged) -->
+      <div id="qrModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); padding:24px; z-index:9999;">
+        <div style="max-width:420px; margin:10vh auto; background:#fff; border-radius:16px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,0.18);">
+          <div class="row" style="justify-content:space-between; align-items:center;">
+            <strong>Share</strong>
+            <button id="qrClose" type="button" class="smallBtn" style="padding:8px 12px;">Close</button>
+          </div>
+
+          <p class="muted" style="margin-top:10px;">Scan this QR code to open the poll.</p>
+
+          <div id="qrBox" style="display:flex; justify-content:center; padding:14px;"></div>
+
+          <div style="margin-top:10px;">
+            <div class="muted" style="font-size:12px; word-break:break-all;" id="qrLinkText"></div>
+            <div class="row" style="margin-top:10px;">
+              <button id="copyLinkQr" type="button">Copy Link</button>
+            </div>
+            <div class="muted" id="copyStatus" style="margin-top:6px; font-size:12px;"></div>
+          </div>
+        </div>
+      </div>
 
     </div>
   </div>
-<script type="module" src="/src/main.js"></script>
+
+  <script type="module" src="/src/main.js"></script>
 </body>
 </html>
-

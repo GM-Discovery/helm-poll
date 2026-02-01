@@ -22,6 +22,9 @@
   let es = null; // EventSource (remote live stream only)
   let currentPollId = null;
   let quill = null; // optional Quill instance
+  let currentTab = "create";   // "create" | "polls" | "settings"
+  let inPollDetail = false;   // true when viewing a single poll
+
 
   // --- Exchange Stamp storage keys ---
   const LS_EXCHANGE_STAMPS = "exchange_stamps";
@@ -463,6 +466,17 @@
 
     const isLocal = !!p?.is_local || String(pollId).startsWith("local_");
     currentPollId = pollId;
+    // Phase 1: poll drilldown replaces list view
+    const listCard = document.getElementById("pollsListCard");
+    if (listCard) listCard.style.display = "none";
+
+    const pollViewEl = document.getElementById("pollView");
+    if (pollViewEl) pollViewEl.style.display = "block";
+    // Ensure in Polls tab + show detail view
+    window.scrollTo(0, 0);
+    showTab("polls");
+    showPollDetail();
+    window.scrollTo(0, 0);
 
     const pollView = document.getElementById("pollView");
     const pollTitle = document.getElementById("pollTitle");
@@ -759,7 +773,68 @@
       if (out) out.textContent = "Vote failed (network error).";
       console.log(e);
     }
+  
+  }
 
+  // =========================
+  // Phase 1: Tabs / page switching
+  // =========================
+  function showTab(tabName) {
+    // Remember current tab in memory (you already added currentTab)
+    currentTab = tabName;
+
+    // Find the 3 page containers from the new HTML
+    const viewCreate = document.getElementById("viewCreate");
+    const viewPolls = document.getElementById("viewPolls");
+    const viewSettings = document.getElementById("viewSettings");
+
+    // Hide all, then show the requested one
+    if (viewCreate) viewCreate.style.display = (tabName === "create") ? "" : "none";
+    if (viewPolls) viewPolls.style.display = (tabName === "polls") ? "" : "none";
+    if (viewSettings) viewSettings.style.display = (tabName === "settings") ? "" : "none";
+
+    // Update tab visual active state (uses your existing .pill.active CSS)
+    const tabCreate = document.getElementById("tabCreate");
+    const tabPolls = document.getElementById("tabPolls");
+    const tabSettings = document.getElementById("tabSettings");
+
+    if (tabCreate) tabCreate.classList.toggle("active", tabName === "create");
+    if (tabPolls) tabPolls.classList.toggle("active", tabName === "polls");
+    if (tabSettings) tabSettings.classList.toggle("active", tabName === "settings");
+  }
+
+  function showPollList() {
+    const listCard = document.getElementById("pollsListCard");
+    const pollView = document.getElementById("pollView");
+    if (listCard) listCard.style.display = "";
+    if (pollView) pollView.style.display = "none";
+    inPollDetail = false;
+  }
+
+  function showPollDetail() {
+    const listCard = document.getElementById("pollsListCard");
+    const pollView = document.getElementById("pollView");
+    if (listCard) listCard.style.display = "none";
+    if (pollView) pollView.style.display = "block";
+    inPollDetail = true;
+  }
+
+
+  function showPollDetail() {
+    const listCard = document.getElementById("pollsListCard");
+    const pollView = document.getElementById("pollView");
+    if (listCard) listCard.style.display = "none";
+    if (pollView) pollView.style.display = "block";
+    inPollDetail = true;
+  }
+
+  function showPollList() {
+    const listCard = document.getElementById("pollsListCard");
+    const pollView = document.getElementById("pollView");
+    if (listCard) listCard.style.display = "block";
+    if (pollView) pollView.style.display = "none";
+    inPollDetail = false;
+  }
 
   // =========================
   // Main init (runs after app.html injected)
@@ -823,8 +898,20 @@
     if (closeBtn) {
       closeBtn.onclick = () => {
         closeStream();
+        showPollList();
         const pollView = document.getElementById("pollView");
         if (pollView) pollView.style.display = "none";
+      };
+    }
+      
+    // Back to list (Poll Detail -> Poll List)
+    const backToListBtn = document.getElementById("backToList");
+    if (backToListBtn) {
+      backToListBtn.onclick = () => {
+        currentPollId = null;
+        showPollList(); // you will add/confirm this helper in the next step
+        // Optional: clear hash so reload doesn't auto-open
+        // window.location.hash = "";
       };
     }
 
@@ -894,6 +981,26 @@
       shareBtn.onclick = () => {
         const link = currentPollId ? pollLink(currentPollId) : window.location.href;
         openQr(link);
+      };
+    }
+      // =========================
+    // Phase 1: Global tabs wiring
+    // =========================
+    const tabCreate = document.getElementById("tabCreate");
+    const tabPolls = document.getElementById("tabPolls");
+    const tabSettings = document.getElementById("tabSettings");
+
+    if (tabCreate) tabCreate.onclick = () => showTab("create");
+    if (tabPolls) tabPolls.onclick = () => showTab("polls");
+    if (tabSettings) tabSettings.onclick = () => showTab("settings");
+
+    // Default view on startup
+    showTab(currentTab || "create");
+
+    if (backToListBtn) {
+      backToListBtn.onclick = () => {
+        currentPollId = null;
+        showPollList();
       };
     }
 

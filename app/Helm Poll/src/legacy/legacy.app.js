@@ -15,6 +15,7 @@
   const params = new URLSearchParams(location.search);
   const apiOverride = params.get("api");
   let API = apiOverride || localStorage.getItem(LS_API) || "https://exchange.breadstandard.com/api";
+  const EXCHANGE_API = "https://exchange.breadstandard.com/api";
 
   // =========================
   // Runtime state
@@ -57,6 +58,8 @@
     if (!pool.length) return null;
     return pool[Math.floor(Math.random() * pool.length)];
   }
+
+  let currentPollApiBase = null; // "https://…/api" for the currently open poll
 
   // =========================
   // Helpers: tokens
@@ -151,6 +154,11 @@
     saveLocalVotesAll(all);
 
     return st;
+  }
+ 
+  function clearExchangeStampPool() {
+    localStorage.removeItem("exchange_stamps");
+    localStorage.removeItem("exchange_persona_id");
   }
 
   function setLocalVote(pollId, token, choice, options) {
@@ -423,7 +431,7 @@
 
     // Optional remote merge (never breaks local)
     try {
-      const r = await fetch(`${API}/polls`, { cache: "no-store" });
+      const r = await fetch(`${EXCHANGE_API}/polls`, { cache: "no-store" });
       if (!r.ok) return;
       const remote = await r.json();
       const remotePolls = remote?.polls;
@@ -465,6 +473,7 @@
     if (!pollId) return;
 
     const isLocal = !!p?.is_local || String(pollId).startsWith("local_");
+    currentPollApiBase = isLocal ? API : EXCHANGE_API;
     currentPollId = pollId;
     // Phase 1: poll drilldown replaces list view
     const listCard = document.getElementById("pollsListCard");
@@ -540,9 +549,45 @@
       const res = buildLocalResults(full);
       if (resultsBox) resultsBox.textContent = JSON.stringify(res, null, 2);
     } else {
+      // --- NEW: Remote poll hydration (do not rely on SSE) ---
+      // Exchange does not guarantee /stream exists (can 404), so we must fetch poll data once.
+      try {
+        const r = await fetch(`https://exchange.breadstandard.com/api/polls`, { method: "GET" });
+        if (r.ok) {
+          const data = await r.json();
+          const polls = Array.isArray(data?.polls) ? data.polls : [];
+          const found = polls.find(p => String(p?.id) === String(pollId));
+          if (found) {
+            full = { ...found, is_local: false };
+
+            if (pollTitle) pollTitle.textContent = full.title || "(untitled)";
+            const pt = full?.meta?.poll_type ?? full?.poll_type ?? "";
+            if (pollMeta) pollMeta.textContent = `${pt} • Remote`;
+
+            if (vb) {
+              vb.innerHTML = "";
+              (full.options || []).forEach(opt => {
+                const b = document.createElement("button");
+                b.type = "button";
+                b.textContent = opt?.label ?? opt;
+                // IMPORTANT: keep your existing castVote call for now; we'll fix option_id next step.
+                b.onclick = () => castVote(full, opt?.label ?? opt);
+                vb.appendChild(b);
+              });
+            }
+
+            if (resultsBox && full?.results) {
+              resultsBox.textContent = JSON.stringify(full.results, null, 2);
+            }
+          }
+        }
+      } catch (e) {
+        // If this fails, we still try SSE below.
+        console.warn("Remote poll hydration failed:", e);
+      }    
       // Remote stream (optional)
       try {
-        es = new EventSource(`${API}/polls/${pollId}/stream`);
+        es = new EventSource(`https://exchange.breadstandard.com/api/polls/${pollId}/stream`);
         es.addEventListener("poll", (ev) => {
           try {
             const obj = JSON.parse(ev.data);
@@ -574,8 +619,12 @@
           }
         });
         es.onerror = () => {
-          if (resultsBox) resultsBox.textContent = "Stream disconnected.";
+          // Exchange can legitimately return 404 for /stream even when the poll exists.
+          // Don't overwrite valid results with a scary error message.
+          try { es.close(); } catch (_) {}
+          // Leave whatever results are already shown in resultsBox.
         };
+
       } catch (e) {
         if (resultsBox) resultsBox.textContent = "Live results unavailable.";
       }
@@ -590,6 +639,7 @@
     if (out) out.textContent = "Asserting…";
 
     const pollId = localPoll?.id;
+    const localKey = String(localPoll?.meta?.created_local_id || pollId);
     const isLocal = !!localPoll?.is_local || String(pollId).startsWith("local_");
     if (!isLocal) { if (out) out.textContent = "Already asserted."; return; }
 
@@ -612,6 +662,31 @@
       if (out) out.textContent = "Stamp fetch failed (continuing assert)…";
     }
 
+    // --- NEW: If this poll was already asserted before, reuse the existing exchange poll ---
+    // We match by meta.created_local_id (which you already set during assert).
+    try {
+      const rList = await fetch(`${EXCHANGE_API}/polls`, { method: "GET" });
+      if (rList.ok) {
+        const list = await rList.json();
+        const polls = Array.isArray(list?.polls) ? list.polls : [];
+
+        // Find an exchange poll whose meta.created_local_id matches our local poll id.
+        // If multiple exist (because of past duplicates), pick the newest by created_at.
+        const matches = polls.filter(p => String(p?.meta?.created_local_id || "") === String(localKey));
+        if (matches.length) {
+          matches.sort((a, b) => String(b?.created_at || "").localeCompare(String(a?.created_at || "")));
+          const found = matches[0];
+
+          if (out) out.textContent = "Already on Exchange — opening…";
+          await openPoll({ id: found.id, is_local: false });
+          return;
+        }
+      }
+    } catch (e) {
+      // If lookup fails, we fall back to POST assert below.
+      console.warn("Exchange poll lookup failed (continuing with POST):", e);
+    }
+
     // Build exchange-shaped canonical payload from existing local fields (no re-asking)
     const payload = {
       title: localPoll.title,
@@ -621,13 +696,13 @@
       meta: {
         poll_type: localPoll.poll_type || "",
         question_html: localPoll.question_html || "",
-        created_local_id: pollId,
+        created_local_id: localKey,
         asserted_at: Date.now(),
       },
     };
 
     try {
-      const r = await fetch(`${API}/polls`, {
+      const r = await fetch(`${EXCHANGE_API}/polls`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": auth },
         body: JSON.stringify(payload),
@@ -724,7 +799,7 @@
         return;
       }
 
-      const r = await fetch(`${API}/polls/${pollId}/vote`, {
+      const r = await fetch(`${EXCHANGE_API}/polls/${pollId}/vote`, {
         method: "POST",
 
         // OPERATOR WRITE-GATE (TEMPORARY)
@@ -758,7 +833,17 @@
       });
 
       const rawBody = await r.text();
+
       if (!r.ok) {
+        // If Exchange says the stamp is invalid, purge local pool and force re-mint next time.
+        // (This prevents getting stuck permanently using a stale stamp.)
+        if (r.status === 403 && rawBody.includes("invalid X-Stamp")) {
+          clearExchangeStampPool();
+          console.log("Cleared stale stamp pool (invalid X-Stamp). Vote again to re-mint.");
+          if (out) out.textContent = "Stamp expired. Vote again.";
+          return;
+        }
+
         if (out) out.textContent = `Vote failed (${r.status}).`;
         console.log("Vote failed:", r.status, rawBody);
         return;

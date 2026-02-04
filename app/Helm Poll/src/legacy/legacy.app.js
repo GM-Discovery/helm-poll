@@ -8,6 +8,7 @@
   const LS_TOKENS = "breadpoll_tokens"; // poll_id -> voter_token (device-local)
   const LS_LOCAL_POLLS = "breadpoll_local_polls_v1"; // array of poll objects
   const LS_LOCAL_VOTES = "breadpoll_local_votes_v1"; // poll_id -> { byToken: {token: choice}, counts: {option: n} }
+  const LS_REMOTE_LAST_CHOICE = "breadpoll_remote_last_choice_v1"; // poll_id -> last chosen label (UI hint only)
 
   // =========================
   // API base selection (optional)
@@ -201,6 +202,146 @@
     };
   }
  
+  // =========================
+  // Helpers: remote "sticky vote" (UI hint only)
+  // =========================
+  function getRemoteLastChoiceMap() {
+    try {
+      return JSON.parse(localStorage.getItem(LS_REMOTE_LAST_CHOICE) || "{}");
+    } catch {
+      return {};
+    }
+  }
+
+  function setRemoteLastChoice(pollId, label) {
+    const m = getRemoteLastChoiceMap();
+    m[String(pollId)] = String(label || "");
+    localStorage.setItem(LS_REMOTE_LAST_CHOICE, JSON.stringify(m));
+  }
+
+  function getRemoteLastChoice(pollId) {
+    const m = getRemoteLastChoiceMap();
+    const v = m[String(pollId)];
+    return v ? String(v) : null;
+  }
+
+  // =========================
+  // Helpers: local vote lookup (for assert carry-forward)
+  // =========================
+  function getLocalSelectedChoice(poll) {
+    if (!poll?.id) return null;
+    const token = ensureLocalToken(poll.id);
+    const all = loadLocalVotesAll();
+    const st = all[poll.id];
+    const choice = st?.byToken?.[token];
+    return choice ? String(choice) : null;
+  }
+
+  // =========================
+  // Helpers: purge local poll + local vote reality after assert
+  // =========================
+  function purgeLocalPollState(localPollId) {
+    const id = String(localPollId || "");
+    if (!id) return;
+
+    // 1) Remove poll itself
+    try { removeLocalPoll(id); } catch {}
+
+    // 2) Remove local votes/results for that poll
+    try {
+      const allVotes = loadLocalVotesAll();
+      if (allVotes && typeof allVotes === "object") {
+        delete allVotes[id];
+        saveLocalVotesAll(allVotes);
+      }
+    } catch {}
+
+    // 3) Remove token entry (local voter_token)
+    try {
+      const t = getTokens();
+      if (t && typeof t === "object") {
+        delete t[id];
+        localStorage.setItem(LS_TOKENS, JSON.stringify(t));
+      }
+    } catch {}
+  }
+
+  // =========================
+  // UI: render vote buttons with selected state
+  // =========================
+  function renderVoteButtons(containerEl, poll, selectedLabel) {
+    if (!containerEl) return;
+    containerEl.innerHTML = "";
+
+    const opts = (poll?.options || []);
+    for (const opt of opts) {
+      const label = opt?.label ?? opt;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+
+      // Visual selection (uses existing CSS classes)
+      if (selectedLabel && String(label) === String(selectedLabel)) {
+        b.className = "btn-primary";
+      } else {
+        b.className = "btn-ghost";
+      }
+
+      b.onclick = () => castVote(poll, label);
+      containerEl.appendChild(b);
+    }
+  }
+
+  // =========================
+  // Exchange: vote by label (used by Assert carry-forward)
+  // =========================
+  async function castExchangeVoteByLabel(poll, choiceLabel, statusEl) {
+    const pollId = poll?.id;
+    if (!pollId) return { ok: false, error: "missing poll id" };
+
+    const auth = getExchangeBasicAuthHeaderOrNull();
+    const voter_token = getToken(pollId);
+
+    const opts = (poll.options || []);
+    const idx = opts.findIndex(o => (o?.label ?? o) === choiceLabel);
+    if (idx < 0) return { ok: false, error: "bad option" };
+
+    const optObj = opts[idx];
+    const option_id = (optObj && typeof optObj === "object" && optObj.id != null)
+      ? String(optObj.id)
+      : String(idx + 1);
+
+    const payload = voter_token ? { option_id, voter_token } : { option_id };
+
+    // Ensure we have a stamp to vote with
+    const stamp = await getOrFetchOneStampOrNull();
+    if (!stamp) return { ok: false, error: "no stamp" };
+
+    const r = await fetch(`${EXCHANGE_API}/polls/${pollId}/vote`, {
+      method: "POST",
+      headers: auth
+        ? { "Content-Type": "application/json", "Authorization": auth, "X-Stamp": stamp }
+        : { "Content-Type": "application/json", "X-Stamp": stamp },
+      body: JSON.stringify(payload),
+    });
+
+    const rawBody = await r.text();
+
+    if (!r.ok) {
+      // visible failure, but do not roll back publish
+      if (statusEl) statusEl.textContent = `Vote carry failed (${r.status}). Poll is live.`;
+      return { ok: false, error: rawBody || String(r.status) };
+    }
+
+    let data = null;
+    try { data = JSON.parse(rawBody); } catch { data = null; }
+
+    if (data?.voter_token) setToken(pollId, data.voter_token);
+    setRemoteLastChoice(pollId, choiceLabel);
+
+    return { ok: true };
+  }
+
   // =========================
   // Exchange operator write-gate (TEMPORARY)
   // =========================
@@ -720,15 +861,10 @@
       assertBtn.onclick = () => assertPollToExchange(full);
     }
 
-    // Vote buttons
+    // Vote buttons (with selected state)
     if (vb) {
-      (full?.options || []).forEach(opt => {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.textContent = opt?.label ?? opt;
-        b.onclick = () => castVote(full, opt?.label ?? opt);
-        vb.appendChild(b);
-      });
+      const selected = isLocalNow ? getLocalSelectedChoice(full) : getRemoteLastChoice(pollId);
+      renderVoteButtons(vb, full, selected);
     }
 
     // Results display
@@ -755,15 +891,7 @@
             if (pollMeta) pollMeta.textContent = `${pt} • Remote`;
 
             if (vb) {
-              vb.innerHTML = "";
-              (full.options || []).forEach(opt => {
-                const b = document.createElement("button");
-                b.type = "button";
-                b.textContent = opt?.label ?? opt;
-                // IMPORTANT: keep your existing castVote call for now; we'll fix option_id next step.
-                b.onclick = () => castVote(full, opt?.label ?? opt);
-                vb.appendChild(b);
-              });
+              renderVoteButtons(vb, full, getRemoteLastChoice(pollId));
             }
 
             if (full?.results) {
@@ -788,15 +916,9 @@
               const pt = full?.meta?.poll_type ?? full?.poll_type ?? "";
               if (pollMeta) pollMeta.textContent = `${pt} • Remote`;
               if (vb) {
-                vb.innerHTML = "";
-                (full.options || []).forEach(opt => {
-                  const b = document.createElement("button");
-                  b.type = "button";
-                  b.textContent = opt?.label ?? opt;
-                  b.onclick = () => castVote(full, opt?.label ?? opt);
-                  vb.appendChild(b);
-                });
+                renderVoteButtons(vb, full, getRemoteLastChoice(pollId));
               }
+
             }
             if (obj?.results) {
               const norm = normalizeResults(obj.results);
@@ -844,6 +966,8 @@
 
     const auth = getExchangeBasicAuthHeaderOrNull();
     if (!auth) { if (out) out.textContent = "Missing exchange credentials."; return; }
+    
+    const localChoice = getLocalSelectedChoice(localPoll);
 
     // --- NEW: Fetch stamps once (human-triggered, not on app open) ---
     // This proves stamp issuance works, and stores the pool in localStorage.
@@ -876,9 +1000,34 @@
           matches.sort((a, b) => String(b?.created_at || "").localeCompare(String(a?.created_at || "")));
           const found = matches[0];
 
-          if (out) out.textContent = "Already on Exchange — opening…";
+          if (out) out.textContent = localChoice
+            ? "Already on Exchange — casting your vote…"
+            : "Already on Exchange — opening…";
+
+          // If we have a local vote, cast it on the Exchange (visible failure, no rollback)
+          if (localChoice) {
+            try {
+              // We only have an id here; fetch full poll to get options/ids
+              const rList2 = await fetch(`${EXCHANGE_API}/polls`, { method: "GET" });
+              if (rList2.ok) {
+                const list2 = await rList2.json();
+                const polls2 = Array.isArray(list2?.polls) ? list2.polls : [];
+                const fullRemote = polls2.find(p => String(p?.id) === String(found.id));
+                if (fullRemote) await castExchangeVoteByLabel(fullRemote, localChoice, out);
+              }
+            } catch (e) {
+              if (out) out.textContent = "Vote carry failed (network). Poll is live.";
+              console.warn(e);
+            }
+          }
+
+          // Exchange is authoritative: purge local reality
+          purgeLocalPollState(pollId);
+
+          await refreshPolls();
           await openPoll({ id: found.id, is_local: false });
           return;
+
         }
       }
     } catch (e) {
@@ -922,11 +1071,22 @@
         return;
       }
 
-      // Replace local draft with a local cached copy of remote poll
-      try { removeLocalPoll(pollId); } catch (_) {}
-      addLocalPoll({ ...remotePoll, is_local: false });
+      // Optional: carry local vote forward (visible failure, no rollback)
+      if (localChoice) {
+        if (out) out.textContent = "Poll live — casting your vote…";
+        try {
+          await castExchangeVoteByLabel(remotePoll, localChoice, out);
+        } catch (e) {
+          if (out) out.textContent = "Vote carry failed (network). Poll is live.";
+          console.warn(e);
+        }
+      } else {
+        if (out) out.textContent = "Poll live on Exchange.";
+      }
 
-      if (out) out.textContent = "Asserted.";
+      // Exchange is authoritative: purge local poll + local votes
+      purgeLocalPollState(pollId);
+
       await refreshPolls();
       await openPoll({ id: remotePoll.id, is_local: false });
     } catch (e) {
@@ -1056,7 +1216,15 @@
       try { data = JSON.parse(rawBody); } catch { data = null; }
       if (data?.voter_token) setToken(pollId, data.voter_token);
 
+      // UI hint (not authoritative): remember last choice for this poll
+      setRemoteLastChoice(pollId, choice);
+
+      // Re-render buttons so selection is obvious immediately
+      const vbNow = document.getElementById("voteButtons");
+      if (vbNow) renderVoteButtons(vbNow, poll, choice);
+
       if (out) out.textContent = "Voted.";
+
     } catch (e) {
       if (out) out.textContent = "Vote failed (network error).";
       console.log(e);

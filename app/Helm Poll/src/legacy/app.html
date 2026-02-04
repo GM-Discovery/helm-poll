@@ -69,14 +69,14 @@
             <div class="row">
               <label class="muted" style="min-width:52px;">Type</label>
               <select id="newType" style="max-width:260px;">
-                <option value="YES_NO">YES_NO</option>
-                <option value="SINGLE_SELECT">SINGLE_SELECT</option>
+                <option value="YES_NO">YES or NO</option>
+                <option value="SINGLE_SELECT">LIST SELECT</option>
               </select>
             </div>
 
             <textarea id="newOptions" rows="3" placeholder="Options (one per line). Leave blank for YES_NO."></textarea>
 
-            <button id="createPoll" type="button">Create</button>
+            <button id="createPoll" type="button">SAVE</button>
 
             <!-- Success / status output (existing) -->
             <div id="createOut" class="muted"></div>
@@ -144,8 +144,51 @@
           <div class="muted" id="voteOut"></div>
 
           <h3 style="margin-top:16px;">Results</h3>
-          <div id="resultsDebug" class="muted" style="margin-top:6px;"></div>
-          <pre id="resultsBox">{}</pre>
+
+          <!-- Human-readable results (weighted-first) -->
+          <div id="resultsPretty">
+
+            <!-- Headline card -->
+            <div class="resultsHeadline">
+              <div class="resultsHeadlineTop">
+                <div class="resultsHeadlineTitle">Results</div>
+                <div id="resultsLocalWarn" class="resultsLocalWarn" style="display:none;">
+                  VOTE NOT YET ON THE EXCHANGE - Assert Button Below
+                </div>
+                <div id="resultsValidated" class="resultsValidated"></div>
+              </div>
+
+              <div class="resultsBigRow">
+                <div class="resultsBigLabel">Represented weight</div>
+                <div id="resultsRepresented" class="resultsBigValue">—</div>
+              </div>
+
+              <div class="resultsStatsRow">
+                <div class="resultsStat">
+                  <div class="resultsStatLabel">People voted</div>
+                  <div id="resultsPeople" class="resultsStatValue">—</div>
+                </div>
+
+                <div class="resultsStat">
+                  <div class="resultsStatLabel">Ballots stored</div>
+                  <div id="resultsBallots" class="resultsStatValue">—</div>
+                </div>
+              </div>
+
+              <div id="resultsDebug" class="muted" style="margin-top:8px;"></div>
+            </div>
+
+            <!-- Option rows -->
+            <div id="resultsRows" class="resultsRows"></div>
+
+            <!-- Audit / JSON (collapsed by default) -->
+            <details class="resultsAudit">
+              <summary>Details / Audit JSON</summary>
+              <pre id="resultsBox">{}</pre>
+            </details>
+
+          </div>
+
 
           <div class="muted" style="margin-top:12px;">
             Link: <a id="shareLink" href="#" target="_blank" rel="noreferrer"></a>

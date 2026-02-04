@@ -219,6 +219,195 @@
   // =========================
   // UI helpers
   // =========================
+  // =========================
+  // Results normalization + rendering (Weighted-first)
+  // =========================
+
+  function normalizeResults(obj) {
+    const raw = obj || {};
+
+    // Some callers pass { poll_id, results: {...} }
+    const r = raw.results && typeof raw.results === "object" ? raw.results : raw;
+
+    // totals: prefer totals, else counts (and allow nested variants)
+    const totals =
+      (r && r.totals && typeof r.totals === "object") ? r.totals :
+      (r && r.counts && typeof r.counts === "object") ? r.counts :
+      (raw && raw.totals && typeof raw.totals === "object") ? raw.totals :
+      (raw && raw.counts && typeof raw.counts === "object") ? raw.counts :
+      {};
+
+    const people_voted =
+      (typeof r.people_voted === "number") ? r.people_voted :
+      (typeof raw.people_voted === "number") ? raw.people_voted :
+      null;
+
+    const total_votes =
+      (typeof r.total_votes === "number") ? r.total_votes :
+      (typeof raw.total_votes === "number") ? raw.total_votes :
+      null;
+
+    const weights_used =
+      (r.weights_used && typeof r.weights_used === "object") ? r.weights_used :
+      (raw.weights_used && typeof raw.weights_used === "object") ? raw.weights_used :
+      null;
+
+    const validated =
+      (typeof r.validated === "boolean") ? r.validated :
+      (typeof raw.validated === "boolean") ? raw.validated :
+      null;
+
+    // represented weight: prefer weights_used.sum, else represented_people, else sum(totals)
+    let represented_weight = null;
+
+    if (weights_used && typeof weights_used.sum === "number") {
+      represented_weight = weights_used.sum;
+    } else if (typeof r.represented_people === "number") {
+      represented_weight = r.represented_people;
+    } else if (typeof raw.represented_people === "number") {
+      represented_weight = raw.represented_people;
+    } else {
+      represented_weight = Object.values(totals).reduce((a, b) => a + (Number(b) || 0), 0);
+    }
+
+    return {
+      totals,
+      people_voted,
+      represented_weight,
+      total_votes,
+      validated,
+      weights_used,
+      raw,
+    };
+  }
+
+  function renderPrettyResults(poll, normalized) {
+    const rowsEl = document.getElementById("resultsRows");
+    const representedEl = document.getElementById("resultsRepresented");
+    const peopleEl = document.getElementById("resultsPeople");
+    const ballotsEl = document.getElementById("resultsBallots");
+    const validatedEl = document.getElementById("resultsValidated");
+    const resultsBox = document.getElementById("resultsBox");
+    const localWarnEl = document.getElementById("resultsLocalWarn");
+    // Show a loud warning when this poll is local-only (not on Exchange).
+    // We treat a poll as local if poll.is_local is true OR id starts with "local_".
+    const isLocalOnly = !!poll?.is_local || String(poll?.id || "").startsWith("local_");
+    if (localWarnEl) localWarnEl.style.display = isLocalOnly ? "inline-flex" : "none";
+
+
+    if (!poll || !normalized) return;
+
+    // Keep audit JSON always available
+    if (resultsBox) {
+      try { resultsBox.textContent = JSON.stringify(normalized.raw, null, 2); }
+      catch { resultsBox.textContent = String(normalized.raw || ""); }
+    }
+
+    const totals = normalized.totals || {};
+
+    // Build option map: id -> label
+    // Remote: options are objects {id,label}
+    // Local: options are strings ["Yes","No"] (no ids), so we map "1..N"
+    const optMap = {};
+    const opts = Array.isArray(poll.options) ? poll.options : [];
+
+    const optionsAreObjects = opts.length && typeof opts[0] === "object";
+    if (optionsAreObjects) {
+      for (const o of opts) {
+        const id = (o && o.id != null) ? String(o.id) : "";
+        const label = (o && o.label != null) ? String(o.label) : "";
+        if (id) optMap[id] = label || `Option ${id}`;
+      }
+    } else {
+      for (let i = 0; i < opts.length; i++) {
+        optMap[String(i + 1)] = String(opts[i]);
+      }
+    }
+
+    // Ensure we include any totals keys even if option list is missing
+    for (const k of Object.keys(totals)) {
+      if (!optMap[k]) optMap[k] = `Option ${k}`;
+    }
+
+    const sumWeight = Object.values(totals).reduce((a, b) => a + (Number(b) || 0), 0);
+
+    // Headline numbers
+    if (representedEl) representedEl.textContent =
+      (normalized.represented_weight == null) ? "—" : String(normalized.represented_weight);
+
+    if (peopleEl) peopleEl.textContent =
+      (normalized.people_voted == null) ? "—" : String(normalized.people_voted);
+
+    if (ballotsEl) ballotsEl.textContent =
+      (normalized.total_votes == null) ? "—" : String(normalized.total_votes);
+
+    if (validatedEl) {
+      if (normalized.validated === true) {
+        validatedEl.textContent = "Validated";
+        validatedEl.classList.remove("bad");
+        validatedEl.classList.add("ok");
+      } else if (normalized.validated === false) {
+        validatedEl.textContent = "Not validated";
+        validatedEl.classList.remove("ok");
+        validatedEl.classList.add("bad");
+      } else {
+        validatedEl.textContent = "";
+        validatedEl.classList.remove("ok");
+        validatedEl.classList.remove("bad");
+      }
+    }
+
+    // Rows
+    if (!rowsEl) return;
+    rowsEl.innerHTML = "";
+
+    if (sumWeight <= 0) {
+      const div = document.createElement("div");
+      div.className = "muted";
+      div.style.textAlign = "center";
+      div.style.padding = "10px 0";
+      div.textContent = "No votes yet.";
+      rowsEl.appendChild(div);
+      return;
+    }
+
+    // Render in option order (1..N for local; poll order for remote)
+    const idsInOrder = optionsAreObjects
+      ? opts.map(o => String(o.id))
+      : opts.map((_, i) => String(i + 1));
+
+    // Also include any totals-only ids not in the option list
+    for (const k of Object.keys(totals)) {
+      if (!idsInOrder.includes(k)) idsInOrder.push(k);
+    }
+
+    for (const id of idsInOrder) {
+      const w = Number(totals[id] || 0);
+      const pct = sumWeight > 0 ? (w / sumWeight) : 0;
+      const pctText = `${Math.round(pct * 100)}%`;
+
+      const row = document.createElement("div");
+      row.className = "resultRow";
+
+      row.innerHTML = `
+        <div class="resultRowTop">
+          <div class="resultLabel">${escapeHtml(optMap[id] || `Option ${id}`)}</div>
+          <div class="resultNums">
+            <span>${escapeHtml(String(w))}</span>
+            <span>•</span>
+            <span>${escapeHtml(pctText)}</span>
+          </div>
+        </div>
+        <div class="barTrack">
+          <div class="barFill" style="width:${Math.max(0, Math.min(100, pct * 100)).toFixed(2)}%;"></div>
+        </div>
+      `;
+
+      rowsEl.appendChild(row);
+    }
+  }
+
+
   function escapeHtml(s) {
     return String(s).replace(/[&<>\"']/g, m => ({
       "&": "&amp;",
@@ -547,7 +736,8 @@
 
     if (isLocalNow) {
       const res = buildLocalResults(full);
-      if (resultsBox) resultsBox.textContent = JSON.stringify(res, null, 2);
+      const norm = normalizeResults(res);
+      renderPrettyResults(full, norm);
     } else {
       // --- NEW: Remote poll hydration (do not rely on SSE) ---
       // Exchange does not guarantee /stream exists (can 404), so we must fetch poll data once.
@@ -576,8 +766,9 @@
               });
             }
 
-            if (resultsBox && full?.results) {
-              resultsBox.textContent = JSON.stringify(full.results, null, 2);
+            if (full?.results) {
+              const norm = normalizeResults(full.results);
+              renderPrettyResults(full, norm);
             }
           }
         }
@@ -607,15 +798,23 @@
                 });
               }
             }
-            if (obj?.results && resultsBox) resultsBox.textContent = JSON.stringify(obj.results, null, 2);
+            if (obj?.results) {
+              const norm = normalizeResults(obj.results);
+              renderPrettyResults(full, norm);
+            }
           } catch (_) {}
         });
         es.addEventListener("results", (ev) => {
           try {
             const obj = JSON.parse(ev.data);
-            if (resultsBox) resultsBox.textContent = JSON.stringify(obj, null, 2);
+
+            // Exchange sends { poll_id, results: {...} }
+            const norm = normalizeResults(obj);
+            renderPrettyResults(full, norm);
           } catch (e) {
-            if (resultsBox) resultsBox.textContent = ev.data;
+            // If parsing fails, keep something visible in audit JSON.
+            const resultsBox = document.getElementById("resultsBox");
+            if (resultsBox) resultsBox.textContent = String(ev.data || "");
           }
         });
         es.onerror = () => {
@@ -766,10 +965,14 @@
       const token = ensureLocalToken(pollId);
       setLocalVote(pollId, token, choice, poll.options || []);
       if (out) out.textContent = "Voted (local).";
+
       const res = buildLocalResults(poll);
-      if (resultsBox) resultsBox.textContent = JSON.stringify(res, null, 2);
+      const norm = normalizeResults(res);
+      renderPrettyResults(poll, norm);
+
       return;
     }
+
 
     // Remote best-effort
     const auth = getExchangeBasicAuthHeaderOrNull();

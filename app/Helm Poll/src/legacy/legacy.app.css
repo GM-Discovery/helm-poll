@@ -310,3 +310,178 @@ pre#resultsBox{
 .ql-snow .ql-stroke { stroke: var(--text); }
 .ql-snow .ql-fill { fill: var(--text); }
 .ql-snow .ql-picker { color: var(--text); }
+
+/* =========================
+   Results (weighted-first)
+   ========================= */
+
+#resultsPretty { margin-top: 10px; }
+
+.resultsHeadline{
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-xl);
+  padding: 14px;
+}
+
+.resultsHeadlineTop{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.resultsHeadlineTitle{
+  font-weight: 800;
+  letter-spacing: .2px;
+}
+
+.resultsValidated{
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  color: var(--muted);
+  background: rgba(255,255,255,.03);
+}
+
+.resultsValidated.ok{
+  border-color: rgba(34,197,94,.35);
+  background: rgba(34,197,94,.10);
+  color: rgba(220,255,235,.92);
+}
+
+.resultsValidated.bad{
+  border-color: rgba(239,68,68,.35);
+  background: rgba(239,68,68,.10);
+  color: rgba(255,225,225,.92);
+}
+
+.resultsBigRow{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap: 10px;
+}
+
+.resultsBigLabel{
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.resultsBigValue{
+  font-size: 28px;
+  font-weight: 900;
+  letter-spacing: .3px;
+}
+
+.resultsStatsRow{
+  display:flex;
+  gap: 12px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.resultsStat{
+  flex: 1;
+  min-width: 140px;
+  padding: 10px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--stroke);
+  background: rgba(0,0,0,.12);
+}
+
+.resultsStatLabel{
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.resultsStatValue{
+  margin-top: 4px;
+  font-weight: 800;
+}
+
+.resultsRows{
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.resultRow{
+  border: 1px solid var(--stroke);
+  background: rgba(255,255,255,.03);
+  border-radius: var(--r-xl);
+  padding: 12px;
+}
+
+.resultRowTop{
+  display:flex;
+  justify-content:space-between;
+  gap: 10px;
+  align-items:baseline;
+}
+
+.resultLabel{
+  font-weight: 800;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resultNums{
+  display:flex;
+  gap: 10px;
+  align-items:baseline;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.barTrack{
+  margin-top: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  background: rgba(0,0,0,.18);
+  overflow: hidden;
+}
+
+.barFill{
+  height: 100%;
+  width: 0%;
+  background: rgba(205,185,176,.75); /* uses your accent family */
+  transition: width 320ms ease;
+}
+
+.resultsAudit{
+  margin-top: 12px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-xl);
+  padding: 10px 12px;
+  background: rgba(0,0,0,.10);
+}
+
+.resultsAudit summary{
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.resultsAudit pre#resultsBox{
+  margin-top: 10px;
+}
+
+.resultsLocalWarn{
+  margin-left: auto;
+  font-weight: 1000;
+  letter-spacing: .9px;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 2px solid rgba(239,68,68,.55);
+  background: rgba(239,68,68,.14);
+  color: rgba(255,230,230,.98);
+  text-transform: uppercase;
+}

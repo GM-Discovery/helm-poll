@@ -260,6 +260,45 @@
             </div>
           </div>
           
+
+          <h3 style="margin-top:6px;">Stamps</h3>
+          <div class="muted2" style="font-size:12px; margin-bottom:10px;">
+            Stamps are ephemeral. The app hides stamp tokens and mints only when needed.
+          </div>
+
+          <div class="row" style="gap:10px; flex-wrap:wrap;">
+            <button id="mintStampBtn" type="button" class="btn-ghost">Mint Stamp</button>
+            <button id="clearStampsBtn" type="button" class="btn-ghost">Clear Stamps</button>
+            <span id="stampStatus" class="muted"></span>
+          </div>
+
+          <hr />
+
+          <h3 style="margin-top:6px;">Delegation</h3>
+          <div class="muted2" style="font-size:12px; margin-bottom:10px;">
+            Delegate some of your trust to another public alias (outbound delegation).
+          </div>
+
+          <div class="grid">
+            <div class="row">
+              <label class="muted" style="min-width:140px;">Delegatee alias</label>
+              <input id="delegateeAliasInput" placeholder="a_..." />
+            </div>
+
+            <div class="row">
+              <label class="muted" style="min-width:140px;">Amount</label>
+              <input id="delegateAmountInput" placeholder="1" inputmode="numeric" />
+            </div>
+
+            <div class="row" style="gap:10px; flex-wrap:wrap;">
+              <button id="delegationSetBtn" type="button">Set / Update Delegation</button>
+              <button id="delegationRevokeBtn" type="button" class="btn-ghost">Revoke Delegation</button>
+            </div>
+
+            <div id="delegationStatus" class="muted"></div>
+          </div>
+
+          <hr />
           <hr />
 
           <h3>Admin</h3>

@@ -27,6 +27,40 @@
   let currentTab = "create";   // "create" | "polls" | "settings"
   let inPollDetail = false;   // true when viewing a single poll
 
+
+  // =========================
+  // UX guard: disable buttons while network calls are in-flight
+  // =========================
+  function setUiBusy(isBusy, statusTextOrNull) {
+    const ids = [
+      "createPoll",
+      "refreshPolls",
+      "assertBtn",
+      "createIdentityBtn",
+      "copyIdentityBackupBtn",
+      "mintStampBtn",
+      "clearStampsBtn",
+      "delegationSetBtn",
+      "delegationRevokeBtn",
+    ];
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !!isBusy;
+    }
+
+    // Vote buttons are dynamic children; disable them too.
+    const vb = document.getElementById("voteButtons");
+    if (vb) {
+      Array.from(vb.querySelectorAll("button")).forEach(b => { b.disabled = !!isBusy; });
+    }
+
+    // Optional: write status to voteOut (used for in-flight messaging)
+    if (statusTextOrNull != null) {
+      const voteOut = document.getElementById("voteOut");
+      if (voteOut) voteOut.textContent = String(statusTextOrNull);
+    }
+  }
+
   // =========================
   // HMAC signing (Web Crypto)
   // =========================
@@ -209,26 +243,17 @@
     }
   }
 
-  // Save/merge stamps without duplicates
+  // Save stamps (ephemeral model: keep pool size = 1).
+  // We never show stamp tokens in the UI; this is internal-only.
   function addStampsToPool(newStamps) {
-    const cur = getExchangeStampPool();
-    const set = new Set(cur);
-    for (const s of (newStamps || [])) {
-      if (typeof s === "string" && s.startsWith("s_")) set.add(s);
-    }
-    localStorage.setItem(LS_EXCHANGE_STAMPS, JSON.stringify(Array.from(set)));
+    const arr = Array.isArray(newStamps) ? newStamps : [];
+    const chosen = arr.find(s => (typeof s === "string") && s.startsWith("s_")) || null;
+    if (!chosen) return;
+
+    // Pool size = 1 (simplifies lifecycle: mint on-demand, no "collecting").
+    localStorage.setItem(LS_EXCHANGE_STAMPS, JSON.stringify([chosen]));
   }
 
-  // Pick ONE stamp and REMOVE it from the pool immediately.
-  // This prevents reuse of a consumed stamp (which causes 403 forever).
-  function pickOneStampOrNull() {
-    const pool = getExchangeStampPool();
-    if (!pool.length) return null;
-
-    const stamp = pool.shift(); // take the first stamp
-    localStorage.setItem(LS_EXCHANGE_STAMPS, JSON.stringify(pool)); // persist remaining pool
-    return stamp;
-  }
   // Pick one stamp (random) for later use (voting, future)
   function pickOneStampOrNull() {
     const pool = getExchangeStampPool();
@@ -237,45 +262,6 @@
   }
 
   let currentPollApiBase = null; // "https://…/api" for the currently open poll
-
-  // Ephemeral stamp (never persisted)
-  let EPHEMERAL_STAMP = "";
-
-  // Assert: mint ONE stamp and hold it only long enough to create a ballot
-  async function handleAssertClick() {
-    const statusEl = document.getElementById("assertStatus");
-    const outEl = document.getElementById("assertOut");
-
-    if (statusEl) statusEl.textContent = "Asserting…";
-    if (outEl) outEl.textContent = "";
-
-    try {
-      const res = await fetch(`${EXCHANGE_API}/stamp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      });
-
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok || !data.ok) {
-        if (statusEl) statusEl.textContent = "Assert failed";
-        if (outEl) outEl.textContent = JSON.stringify(data, null, 2);
-        return;
-      }
-
-      // We expect "issued" to contain at least one active stamp token.
-      // If it's empty, UI can't proceed to first-vote without another change.
-      const stamp = Array.isArray(data.issued) && data.issued[0] ? data.issued[0] : "";
-      EPHEMERAL_STAMP = stamp;
-
-      if (statusEl) statusEl.textContent = stamp ? "Asserted (stamp ready)" : "Asserted (no stamp issued)";
-      if (outEl) outEl.textContent = JSON.stringify({ ok: true, stamp_ready: !!stamp }, null, 2);
-    } catch (e) {
-      if (statusEl) statusEl.textContent = "Assert failed (network)";
-      if (outEl) outEl.textContent = String(e);
-    }
-  }
 
   // =========================
   // Helpers: tokens
@@ -297,6 +283,14 @@
   function getToken(pollId) {
     const t = getTokens();
     return t[pollId] || null;
+  }
+
+  function clearToken(pollId) {
+    const t = getTokens();
+    if (t && Object.prototype.hasOwnProperty.call(t, pollId)) {
+      delete t[pollId];
+      localStorage.setItem(LS_TOKENS, JSON.stringify(t));
+    }
   }
 
   function ensureLocalToken(pollId) {
@@ -488,133 +482,62 @@
     if (!containerEl) return;
     containerEl.innerHTML = "";
 
-    const opts = Array.isArray(poll?.options) ? poll.options : [];
-
-    for (let i = 0; i < opts.length; i++) {
-      const opt = opts[i];
-
-      const label = (opt && typeof opt === "object" && opt.label != null)
-        ? String(opt.label)
-        : String(opt);
-
-      // Remote polls often have option ids; local polls usually don't.
-      const optionId = (opt && typeof opt === "object" && opt.id != null)
-        ? String(opt.id)
-        : String(i + 1);
-
+    const opts = (poll?.options || []);
+    for (const opt of opts) {
+      const label = opt?.label ?? opt;
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = label;
 
-      // Visual selection
-      b.className = (selectedLabel && String(label) === String(selectedLabel))
-        ? "btn-primary"
-        : "btn-ghost";
+      // Visual selection (uses existing CSS classes)
+      if (selectedLabel && String(label) === String(selectedLabel)) {
+        b.className = "btn-primary";
+      } else {
+        b.className = "btn-ghost";
+      }
 
-      b.onclick = () => castVote(poll, optionId, label);
-
+      b.onclick = () => castVote(poll, label);
       containerEl.appendChild(b);
     }
   }
- 
+
   // =========================
   // Exchange: vote by label (used by Assert carry-forward)
   // =========================
   async function castExchangeVoteByLabel(poll, choiceLabel, statusEl) {
-    const pollId =
-      poll?.meta?.exchange_poll_id ||
-      poll?.meta?.exchange_id ||
-      poll?.exchange_poll_id ||
-      poll?.exchange_id ||
-      poll?.id;
-
-    // Safety: never try to vote a local_* id against the Exchange
-    if (String(pollId).startsWith("local_")) {
-      if (statusEl) statusEl.textContent = "This poll is local-only (not on exchange yet).";
-      return { ok: false, error: "local_poll_id_not_valid_on_exchange" };
-    }
-
+    // Used for "carry-forward" during assert.
+    // Important: keep this function UI-safe (no stamp token output).
+    const pollId = poll?.id;
     if (!pollId) return { ok: false, error: "missing poll id" };
 
-    const voter_token = getToken(pollId);
-
+    // Map label -> option_id
     const opts = (poll.options || []);
     const idx = opts.findIndex(o => (o?.label ?? o) === choiceLabel);
-    if (idx < 0) return { ok: false, error: "bad option" };
+    if (idx < 0) {
+      if (statusEl) statusEl.textContent = "Vote carry failed (bad option). Poll is live.";
+      return { ok: false, error: "bad option" };
+    }
 
     const optObj = opts[idx];
     const option_id = (optObj && typeof optObj === "object" && optObj.id != null)
       ? String(optObj.id)
       : String(idx + 1);
 
-    // Body no longer includes voter_token; revote uses X-Voter-Token header.
-    const payload = { option_id };
+    if (statusEl) statusEl.textContent = "Casting vote on Exchange…";
 
-    // First vote needs X-Stamp; revote uses X-Voter-Token
-    let stamp = null;
-    const headers = { "Content-Type": "application/json" };
+    const res = await exchangeVoteWithRetry(poll, String(pollId), option_id, choiceLabel, statusEl);
 
-    if (voter_token) {
-      headers["X-Voter-Token"] = String(voter_token);
-    } else {
-      stamp = await getOrFetchOneStampOrNull();
-      if (!stamp) return { ok: false, error: "no stamp" };
-      headers["X-Stamp"] = stamp;
+    if (!res?.ok) {
+      if (statusEl) statusEl.textContent = "Poll live; vote not cast yet.";
+      return { ok: false, error: res?.error || "vote failed" };
     }
 
-    console.log("[stamp] pool_after_pick=", getExchangeStampPool().length, "stamp=", String(stamp || "").slice(0, 12));
-    console.log("[vote] pollId=", pollId, "option_id=", option_id, "using=", voter_token ? "X-Voter-Token" : "X-Stamp");
-
-    const r = await fetch(`${EXCHANGE_API}/polls/${pollId}/vote`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-    });
-
-    const rawBody = await r.text();
-
-    if (!r.ok) {
-      // If we tried to do a FIRST vote with a stamp and got rejected,
-      // our local stamp pool is probably stale. Clear it and retry once.
-      if (!voter_token && r.status === 403) {
-        try { clearExchangeStampPool(); } catch {}
-        try {
-          const stamp2 = await getOrFetchOneStampOrNull();
-          if (stamp2) {
-            const headers2 = { "Content-Type": "application/json", "X-Stamp": stamp2 };
-            const r2 = await fetch(`${EXCHANGE_API}/polls/${pollId}/vote`, {
-              method: "POST",
-              headers: headers2,
-              body: JSON.stringify(payload),
-            });
-
-            const raw2 = await r2.text();
-            if (r2.ok) {
-              let data2 = null;
-              try { data2 = JSON.parse(raw2); } catch {}
-              if (data2?.voter_token) setToken(pollId, data2.voter_token);
-              setRemoteLastChoice(pollId, choiceLabel);
-              return { ok: true };
-            }
-          }
-        } catch (_) {
-          // fall through to normal failure below
-        }
-      }
-
-      if (statusEl) statusEl.textContent = `Vote failed (${r.status}).`;
-      return { ok: false, error: rawBody || String(r.status) };
-    }
-
-
-    let data = null;
-    try { data = JSON.parse(rawBody); } catch { data = null; }
-
-    if (data?.voter_token) setToken(pollId, data.voter_token);
-    setRemoteLastChoice(pollId, choiceLabel);
+    // After a successful carry-forward vote, refresh results once so the UI is unambiguous.
+    try { await fetchRemoteResultsOnceAndRender(poll, pollId); } catch {}
 
     return { ok: true };
   }
+
 
   // =========================
   // Exchange Identity (HMAC client creds stored locally)
@@ -875,52 +798,6 @@
       return false;
     }
   }
-
-  async function castExchangeVote(poll, optionId, statusEl) {
-    const pollId = poll?.meta?.exchange_poll_id || poll?.id;
-    if (!pollId) throw new Error("missing poll id");
-    if (String(pollId).startsWith("local_")) {
-      if (statusEl) statusEl.textContent = "Poll is not on Exchange yet.";
-      return { ok: false, error: "local_id_on_exchange" };
-    }
-
-    const headers = { "Content-Type": "application/json" };
-
-    const voterToken = getVoterToken(pollId);
-    if (voterToken) {
-      headers["X-Voter-Token"] = voterToken;
-    } else {
-      if (!EPHEMERAL_STAMP) {
-        throw new Error("must assert before first vote");
-      }
-      headers["X-Stamp"] = EPHEMERAL_STAMP;
-    }
-
-    const res = await fetch(`${EXCHANGE_API}/polls/${pollId}/vote`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ option_id: String(optionId) }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok || !data.ok) {
-      if (headers["X-Voter-Token"] && data?.error === "invalid X-Voter-Token") {
-        clearVoterToken(pollId);
-      }
-      throw new Error(data?.error || "vote failed");
-    }
-
-    if (data.voter_token) setVoterToken(pollId, data.voter_token);
-
-    // Shred stamp after first successful vote
-    if (!headers["X-Voter-Token"]) {
-      EPHEMERAL_STAMP = "";
-    }
-
-    return data;
-  }
-
 
   // =========================
   // Quill (optional)
@@ -1235,6 +1112,9 @@
         // If this fails, we still try SSE below.
         console.warn("Remote poll hydration failed:", e);
       }    
+      // Fetch results once (works even if SSE stream is missing)
+      await fetchRemoteResultsOnceAndRender(full, pollId);
+
       // Remote stream (optional)
       try {
         es = new EventSource(`https://exchange.breadstandard.com/api/polls/${pollId}/stream`);
@@ -1281,6 +1161,110 @@
         if (resultsBox) resultsBox.textContent = "Live results unavailable.";
       }
     }
+  }
+
+
+  // =========================
+  // Remote results hydration (do not rely on SSE)
+  // =========================
+  async function fetchRemoteResultsOnceAndRender(poll, pollId) {
+    try {
+      const r = await fetch(`${EXCHANGE_API}/polls/${encodeURIComponent(String(pollId))}/results`, { method: "GET" });
+      if (!r.ok) return false;
+      const data = await r.json();
+      const norm = normalizeResults(data);
+      renderPrettyResults(poll, norm);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // =========================
+  // Remote voting with one-step self-heal
+  // =========================
+  async function exchangeVoteWithRetry(poll, pollId, option_id, choiceLabel, outEl) {
+    // Attempt order:
+    // 1) If we have a voter_token, try X-Voter-Token (no stamp).
+    //    If token is rejected, clear it and fall back to stamp once.
+    // 2) If no token (or token rejected), get a stamp and try X-Stamp.
+    //    If stamp is rejected, clear stamp pool, mint once, retry once.
+    const payload = { option_id };
+
+    const attempt = async (headers) => {
+      const r = await fetch(`${EXCHANGE_API}/polls/${encodeURIComponent(String(pollId))}/vote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify(payload),
+      });
+      const raw = await r.text().catch(() => "");
+      let data = null;
+      try { data = JSON.parse(raw); } catch { data = null; }
+      return { ok: r.ok, status: r.status, raw, data };
+    };
+
+    const existingToken = getToken(pollId);
+
+    // ---- try voter token path first (if present)
+    if (existingToken) {
+      const res = await attempt({ "X-Voter-Token": String(existingToken) });
+      if (res.ok) {
+        if (res.data?.voter_token) setToken(pollId, res.data.voter_token);
+        setRemoteLastChoice(pollId, choiceLabel);
+        if (outEl) outEl.textContent = "Voted.";
+        return { ok: true, used: "voter_token", data: res.data };
+      }
+
+      // If token was rejected, clear it and fall back once.
+      // We treat 401/403 as likely auth/token problems; keep other statuses as normal failures.
+      if (res.status === 401 || res.status === 403) {
+        clearToken(pollId);
+      } else {
+        if (outEl) outEl.textContent = `Vote failed (${res.status}).`;
+        return { ok: false, error: res.raw || String(res.status) };
+      }
+    }
+
+    // ---- stamp path (first vote, or token fallback)
+    let stamp = await getOrFetchOneStampOrNull();
+    if (!stamp) {
+      if (outEl) outEl.textContent = "Vote blocked: could not obtain stamp.";
+      return { ok: false, error: "no stamp" };
+    }
+
+    let res1 = await attempt({ "X-Stamp": stamp });
+    if (res1.ok) {
+      if (res1.data?.voter_token) setToken(pollId, res1.data.voter_token);
+      setRemoteLastChoice(pollId, choiceLabel);
+      if (outEl) outEl.textContent = "Voted.";
+      return { ok: true, used: "stamp", data: res1.data };
+    }
+
+    // If stamp rejected, clear pool, mint once, retry once.
+    if (res1.status === 403 && String(res1.raw || "").includes("invalid X-Stamp")) {
+      clearExchangeStampPool();
+      if (outEl) outEl.textContent = "Stamp expired. Refreshing stamp…";
+      try {
+        await fetchStampsFromExchange();
+      } catch {}
+      const stamp2 = await getOrFetchOneStampOrNull();
+      if (!stamp2) {
+        if (outEl) outEl.textContent = "Vote blocked: could not refresh stamp.";
+        return { ok: false, error: "no stamp after refresh" };
+      }
+      const res2 = await attempt({ "X-Stamp": stamp2 });
+      if (res2.ok) {
+        if (res2.data?.voter_token) setToken(pollId, res2.data.voter_token);
+        setRemoteLastChoice(pollId, choiceLabel);
+        if (outEl) outEl.textContent = "Voted.";
+        return { ok: true, used: "stamp_retry", data: res2.data };
+      }
+      if (outEl) outEl.textContent = `Vote failed (${res2.status}).`;
+      return { ok: false, error: res2.raw || String(res2.status) };
+    }
+
+    if (outEl) outEl.textContent = `Vote failed (${res1.status}).`;
+    return { ok: false, error: res1.raw || String(res1.status) };
   }
 
   // =========================
@@ -1345,19 +1329,7 @@
                 const list2 = await rList2.json();
                 const polls2 = Array.isArray(list2?.polls) ? list2.polls : [];
                 const fullRemote = polls2.find(p => String(p?.id) === String(found.id));
-                if (fullRemote) {
-                  const r = await castExchangeVoteByLabel(fullRemote, localChoice, out);
-
-                  // Ensure UI shows the selection after carry-forward
-                  const vb = document.getElementById("voteButtons");
-                  if (vb) renderVoteButtons(vb, fullRemote, localChoice);
-
-                  // (optional) also refresh results immediately from the returned payload
-                  if (r?.results) {
-                    updatePollResults(fullRemote.id, r.results);
-                    renderPrettyResults(fullRemote, normalizeResults(r.results));
-                  }
-                }
+                if (fullRemote) await castExchangeVoteByLabel(fullRemote, localChoice, out);
               }
             } catch (e) {
               if (out) out.textContent = "Vote carry failed (network). Poll is live.";
@@ -1418,15 +1390,7 @@
       if (localChoice) {
         if (out) out.textContent = "Poll live — casting your vote…";
         try {
-          const r = await castExchangeVoteByLabel(remotePoll, localChoice, out);
-
-          const vb = document.getElementById("voteButtons");
-          if (vb) renderVoteButtons(vb, remotePoll, localChoice);
-
-          if (r?.results) {
-            updatePollResults(remotePoll.id, r.results);
-            renderPrettyResults(remotePoll, normalizeResults(r.results));
-          }
+          await castExchangeVoteByLabel(remotePoll, localChoice, out);
         } catch (e) {
           if (out) out.textContent = "Vote carry failed (network). Poll is live.";
           console.warn(e);
@@ -1464,64 +1428,63 @@
     }
   }
  
-  async function castVote(poll, optionId, labelForUI) {
-    const statusEl = document.getElementById("voteStatus");
+  async function castVote(poll, choice) {
+    const pollId = poll.id;
+    const isLocal = !!poll.is_local || String(pollId).startsWith("local_");
+    const out = document.getElementById("voteOut");
+    const resultsBox = document.getElementById("resultsBox");
 
-    const pollId = poll?.id;
-    if (!pollId) return;
+    if (out) out.textContent = "Submitting…";
 
-    const isLocal = !!poll?.is_local || String(pollId).startsWith("local_");
-
-    // -------------------------
-    // LOCAL VOTE PATH
-    // -------------------------
     if (isLocal) {
-      try {
-        // Store the selection locally so assert can carry it forward later
-        const token = ensureLocalToken(pollId);
+      const token = ensureLocalToken(pollId);
+      setLocalVote(pollId, token, choice, poll.options || []);
+      if (out) out.textContent = "Voted (local).";
 
-        // Local polls: options are usually ["Yes","No"] etc.
-        const labels = (poll?.options || []).map(o => (o?.label ?? o));
+      const res = buildLocalResults(poll);
+      const norm = normalizeResults(res);
+      renderPrettyResults(poll, norm);
 
-        setLocalVote(pollId, token, String(labelForUI), labels);
-
-        // Re-render buttons with highlight
-        const vb = document.getElementById("voteButtons");
-        if (vb) renderVoteButtons(vb, poll, String(labelForUI));
-
-        // Re-render local results immediately
-        const res = buildLocalResults(poll);
-        const norm = normalizeResults(res);
-        renderPrettyResults(poll, norm);
-
-        if (statusEl) statusEl.textContent = "Saved locally.";
-      } catch (e) {
-        if (statusEl) statusEl.textContent = String(e);
-        console.log(e);
-      }
       return;
     }
 
-    // -------------------------
-    // REMOTE (EXCHANGE) VOTE PATH
-    // -------------------------
+
+    // Remote best-effort (Exchange)
+    // Remote best-effort (Exchange)
+    const pollIdStr = String(pollId);
+
+    // Map the clicked label -> exchange option_id.
+    const opts = (poll.options || []);
+    const idx = opts.findIndex(o => (o?.label ?? o) === choice);
+    if (idx < 0) { if (out) out.textContent = "Vote failed (bad option)."; return; }
+
+    const optObj = opts[idx];
+    const option_id = (optObj && typeof optObj === "object" && optObj.id != null)
+      ? String(optObj.id)
+      : String(idx + 1); // fallback to 1-based ordering
+
+    // UI hint (local only): remember last choice for this poll
+    setRemoteLastChoice(pollIdStr, choice);
+
+    // Prevent double-posts
+    setUiBusy(true, "Submitting…");
     try {
-      const result = await castExchangeVoteByLabel(poll, labelForUI, statusEl);
+      const res = await exchangeVoteWithRetry(poll, pollIdStr, option_id, choice, out);
 
-      // After a successful vote, refresh the poll view so results + highlight update
-      if (result?.ok) {
-        setRemoteLastChoice(pollId, labelForUI);
+      // Re-render buttons so selection is obvious immediately
+      const vbNow = document.getElementById("voteButtons");
+      if (vbNow) renderVoteButtons(vbNow, poll, choice);
 
-        // Force a quick refresh of the remote poll list (so results appear)
-        try { await refreshPolls(); } catch {}
-
-        // Re-open the poll using the id we just voted on
-        try { await openPoll({ id: pollId, is_local: false }); } catch {}
+      // Always refresh results once after a successful vote
+      if (res?.ok) {
+        await fetchRemoteResultsOnceAndRender(poll, pollIdStr);
       }
     } catch (e) {
-      if (statusEl) statusEl.textContent = String(e);
-      console.log(e);
+      if (out) out.textContent = "Vote failed (network error).";
+    } finally {
+      setUiBusy(false, null);
     }
+
   }
 
   // =========================
@@ -1565,6 +1528,23 @@
     if (listCard) listCard.style.display = "none";
     if (pollView) pollView.style.display = "block";
     inPollDetail = true;
+  }
+
+
+  function showPollDetail() {
+    const listCard = document.getElementById("pollsListCard");
+    const pollView = document.getElementById("pollView");
+    if (listCard) listCard.style.display = "none";
+    if (pollView) pollView.style.display = "block";
+    inPollDetail = true;
+  }
+
+  function showPollList() {
+    const listCard = document.getElementById("pollsListCard");
+    const pollView = document.getElementById("pollView");
+    if (listCard) listCard.style.display = "block";
+    if (pollView) pollView.style.display = "none";
+    inPollDetail = false;
   }
 
   // =========================
@@ -1716,6 +1696,118 @@
           if (identityStatus) identityStatus.textContent = "Recovery code copied to clipboard. Store it safely.";
         } catch (e) {
           if (identityStatus) identityStatus.textContent = `Copy failed: ${String(e?.message || e)}`;
+        }
+      };
+    }
+
+    // =========================
+    // Settings: Stamps (ephemeral UX)
+    // =========================
+    const stampStatus = document.getElementById("stampStatus");
+    const mintStampBtn = document.getElementById("mintStampBtn");
+    const clearStampsBtn = document.getElementById("clearStampsBtn");
+
+    const refreshStampUi = () => {
+      const n = getExchangeStampPool().length;
+      if (stampStatus) stampStatus.textContent = n ? "Stamp ready (hidden)." : "No stamp cached. Mint happens on-demand.";
+    };
+
+    if (mintStampBtn) {
+      mintStampBtn.onclick = async () => {
+        try {
+          setUiBusy(true, "Minting stamp…");
+          await fetchStampsFromExchange();
+          if (stampStatus) stampStatus.textContent = "Stamp minted (hidden).";
+        } catch (e) {
+          if (stampStatus) stampStatus.textContent = `Mint failed: ${String(e?.message || e)}`;
+        } finally {
+          setUiBusy(false, null);
+          refreshStampUi();
+        }
+      };
+    }
+
+    if (clearStampsBtn) {
+      clearStampsBtn.onclick = () => {
+        clearExchangeStampPool();
+        refreshStampUi();
+      };
+    }
+
+    refreshStampUi();
+
+    // =========================
+    // Settings: Delegation
+    // =========================
+    const delegateeAliasInput = document.getElementById("delegateeAliasInput");
+    const delegateAmountInput = document.getElementById("delegateAmountInput");
+    const delegationSetBtn = document.getElementById("delegationSetBtn");
+    const delegationRevokeBtn = document.getElementById("delegationRevokeBtn");
+    const delegationStatus = document.getElementById("delegationStatus");
+
+    // convenience: remember last typed values (local only)
+    if (delegateeAliasInput) delegateeAliasInput.value = localStorage.getItem("exchange_last_delegatee_alias") || "";
+    if (delegateAmountInput) delegateAmountInput.value = localStorage.getItem("exchange_last_delegate_amount") || "";
+
+    async function exchangeSetDelegation(delegatee_alias, amount) {
+      const body = { delegatee_alias: String(delegatee_alias), amount: Number(amount) };
+      const r = await exchangeFetchAuthed("/delegation/set", { method: "POST", body });
+      const raw = await r.text().catch(() => "");
+      if (!r.ok) throw new Error(`Delegation set failed (${r.status}). ${raw}`);
+      try { return JSON.parse(raw); } catch { return { ok: true }; }
+    }
+
+    async function exchangeRevokeDelegation(delegatee_alias) {
+      const body = { delegatee_alias: String(delegatee_alias) };
+      const r = await exchangeFetchAuthed("/delegation/revoke", { method: "POST", body });
+      const raw = await r.text().catch(() => "");
+      if (!r.ok) throw new Error(`Delegation revoke failed (${r.status}). ${raw}`);
+      try { return JSON.parse(raw); } catch { return { ok: true }; }
+    }
+
+    if (delegationSetBtn) {
+      delegationSetBtn.onclick = async () => {
+        try {
+          const alias = (delegateeAliasInput?.value || "").trim();
+          const amtRaw = (delegateAmountInput?.value || "").trim();
+          const amt = Number(amtRaw);
+          if (!alias) { if (delegationStatus) delegationStatus.textContent = "Enter a delegatee alias."; return; }
+          if (!Number.isFinite(amt) || amt <= 0) { if (delegationStatus) delegationStatus.textContent = "Enter a positive amount."; return; }
+
+          localStorage.setItem("exchange_last_delegatee_alias", alias);
+          localStorage.setItem("exchange_last_delegate_amount", String(amt));
+
+          setUiBusy(true, "Setting delegation…");
+          const data = await exchangeSetDelegation(alias, amt);
+
+          if (delegationStatus) {
+            // Show a few helpful fields if present (backend may vary)
+            const a = data?.delegated_out_sum != null ? `delegated_out_sum=${data.delegated_out_sum}` : "";
+            const b = data?.delegator_available_weight != null ? `available=${data.delegator_available_weight}` : "";
+            delegationStatus.textContent = `Delegation set. ${[a, b].filter(Boolean).join(" ")}`.trim();
+          }
+        } catch (e) {
+          if (delegationStatus) delegationStatus.textContent = String(e?.message || e);
+        } finally {
+          setUiBusy(false, null);
+        }
+      };
+    }
+
+    if (delegationRevokeBtn) {
+      delegationRevokeBtn.onclick = async () => {
+        try {
+          const alias = (delegateeAliasInput?.value || "").trim();
+          if (!alias) { if (delegationStatus) delegationStatus.textContent = "Enter the delegatee alias to revoke."; return; }
+
+          setUiBusy(true, "Revoking delegation…");
+          const data = await exchangeRevokeDelegation(alias);
+
+          if (delegationStatus) delegationStatus.textContent = "Delegation revoked.";
+        } catch (e) {
+          if (delegationStatus) delegationStatus.textContent = String(e?.message || e);
+        } finally {
+          setUiBusy(false, null);
         }
       };
     }

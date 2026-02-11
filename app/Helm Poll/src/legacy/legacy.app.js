@@ -27,6 +27,172 @@
   let currentTab = "create";   // "create" | "polls" | "settings"
   let inPollDetail = false;   // true when viewing a single poll
 
+  // =========================
+  // HMAC signing (Web Crypto)
+  // =========================
+
+  function bytesToHex(bytes) {
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function hexToBytes(hex) {
+    const clean = String(hex || "").trim();
+    if (!/^[0-9a-fA-F]+$/.test(clean) || clean.length % 2 !== 0) return null;
+    const out = new Uint8Array(clean.length / 2);
+    for (let i = 0; i < out.length; i++) {
+      out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+    }
+    return out;
+  }
+
+  async function sha256Hex(text) {
+    const enc = new TextEncoder();
+    const buf = await crypto.subtle.digest("SHA-256", enc.encode(text));
+    return bytesToHex(new Uint8Array(buf));
+  }
+
+  function makeNonceHex(byteLen = 12) {
+    const b = new Uint8Array(byteLen);
+    crypto.getRandomValues(b);
+    return bytesToHex(b);
+  }
+
+  async function hmacSha256Hex(keyHex, message) {
+    const keyBytes = hexToBytes(keyHex);
+    if (!keyBytes) throw new Error("Signing key must be hex (even length).");
+    const cryptoKey = await crypto.subtle.importKey(
+      "raw",
+      keyBytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const enc = new TextEncoder();
+    const sigBuf = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
+    return bytesToHex(new Uint8Array(sigBuf));
+  }
+
+  async function buildHmacHeaders(method, path, bodyObjOrNull) {
+    const creds = getExchangeHmacCredsOrNull();
+    if (!creds) throw new Error("Missing Exchange identity (self_id / signing_key).");
+
+    const ts = String(Date.now()); // unix ms
+    const nonce = makeNonceHex(12);
+
+    const bodyText = bodyObjOrNull == null ? "" : JSON.stringify(bodyObjOrNull);
+    const bodyHash = await sha256Hex(bodyText);
+
+    const base =
+      String(method).toUpperCase() + "\n" +
+      String(path) + "\n" +
+      ts + "\n" +
+      nonce + "\n" +
+      bodyHash;
+
+    const sigHex = await hmacSha256Hex(creds.signing_key, base);
+
+    return {
+      "X-Self-ID": creds.self_id,
+      "X-Timestamp": ts,
+      "X-Nonce": nonce,
+      "X-Signature": sigHex,
+    };
+  }
+
+  // Fetch helper for Exchange endpoints that require HMAC.
+  // path is like "/stamp" (we will prefix EXCHANGE_API)
+  async function exchangeFetchAuthed(path, opts) {
+    const method = (opts?.method || "GET").toUpperCase();
+    const bodyObj = (opts && "body" in opts) ? opts.body : null;
+
+    const apiPrefix = new URL(EXCHANGE_API).pathname.replace(/\/$/, ""); // e.g. "/api"
+    const signPath = `${apiPrefix}${path}`; // e.g. "/api/stamp"
+    const h = await buildHmacHeaders(method, signPath, bodyObj);
+
+    const headers = {
+      "Content-Type": "application/json",
+      ...(opts?.headers || {}),
+      ...h,
+    };
+    
+    console.log("[exchangeFetchAuthed]", method, `${EXCHANGE_API}${path}`, "signPath=", signPath);
+
+    return fetch(`${EXCHANGE_API}${path}`, {
+      method,
+      headers,
+      body: bodyObj == null ? undefined : JSON.stringify(bodyObj),
+    });
+  }
+
+  // =========================
+  // Identity create (PoW-lite)
+  // =========================
+
+  async function exchangeGetIdentityChallenge() {
+    const r = await fetch(`${EXCHANGE_API}/identity/challenge`, { method: "GET" });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new Error(`Challenge failed (${r.status}). ${t}`);
+    }
+    return r.json(); // expected: { challenge, difficulty }
+  }
+
+  async function solvePowLite(challenge, difficulty) {
+    // Goal: find nonce such that sha256(challenge + ":" + nonce) has N leading zeros (hex).
+    // This is intentionally simple and auditable. Difficulty should be low for MVP.
+    const targetPrefix = "0".repeat(Math.max(0, Number(difficulty) || 0));
+
+    let nonce = 0;
+    while (true) {
+      const candidate = String(nonce);
+      const h = await sha256Hex(`${challenge}:${candidate}`);
+      if (h.startsWith(targetPrefix)) return candidate;
+      nonce++;
+      // Yield occasionally so UI doesn't feel frozen
+      if (nonce % 500 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  async function exchangeCreateIdentityWithPow(statusEl) {
+    if (statusEl) statusEl.textContent = "Requesting challenge…";
+
+    const { challenge, difficulty } = await exchangeGetIdentityChallenge();
+
+    if (statusEl) statusEl.textContent = `Solving proof-of-work (difficulty ${difficulty})…`;
+
+    const nonce = await solvePowLite(challenge, difficulty);
+
+    if (statusEl) statusEl.textContent = "Creating identity…";
+
+    const r = await fetch(`${EXCHANGE_API}/identity/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ challenge, nonce }),
+    });
+
+    const raw = await r.text().catch(() => "");
+    if (!r.ok) throw new Error(`Identity create failed (${r.status}). ${raw}`);
+
+    let data = null;
+    try { data = JSON.parse(raw); } catch { data = null; }
+    if (!data?.self_id || !data?.signing_key) {
+      throw new Error("Identity create returned unexpected payload (missing self_id/signing_key).");
+    }
+
+    // Store locally (do not log)
+    localStorage.setItem(LS_EXCHANGE_SELF_ID, String(data.self_id));
+    localStorage.setItem(LS_EXCHANGE_SIGNING_KEY, String(data.signing_key));
+    if (data.public_alias) localStorage.setItem(LS_EXCHANGE_PUBLIC_ALIAS, String(data.public_alias));
+
+    return data; // { self_id, signing_key, public_alias? }
+  }
+
+  async function copyTextToClipboardOrThrow(text) {
+    // Tauri + modern browsers should support navigator.clipboard in secure contexts.
+    // If clipboard fails, we throw and show a user-facing message.
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard not available.");
+    await navigator.clipboard.writeText(String(text));
+  }
 
   // --- Exchange Stamp storage keys ---
   const LS_EXCHANGE_STAMPS = "exchange_stamps";
@@ -53,6 +219,16 @@
     localStorage.setItem(LS_EXCHANGE_STAMPS, JSON.stringify(Array.from(set)));
   }
 
+  // Pick ONE stamp and REMOVE it from the pool immediately.
+  // This prevents reuse of a consumed stamp (which causes 403 forever).
+  function pickOneStampOrNull() {
+    const pool = getExchangeStampPool();
+    if (!pool.length) return null;
+
+    const stamp = pool.shift(); // take the first stamp
+    localStorage.setItem(LS_EXCHANGE_STAMPS, JSON.stringify(pool)); // persist remaining pool
+    return stamp;
+  }
   // Pick one stamp (random) for later use (voting, future)
   function pickOneStampOrNull() {
     const pool = getExchangeStampPool();
@@ -61,6 +237,45 @@
   }
 
   let currentPollApiBase = null; // "https://…/api" for the currently open poll
+
+  // Ephemeral stamp (never persisted)
+  let EPHEMERAL_STAMP = "";
+
+  // Assert: mint ONE stamp and hold it only long enough to create a ballot
+  async function handleAssertClick() {
+    const statusEl = document.getElementById("assertStatus");
+    const outEl = document.getElementById("assertOut");
+
+    if (statusEl) statusEl.textContent = "Asserting…";
+    if (outEl) outEl.textContent = "";
+
+    try {
+      const res = await fetch(`${EXCHANGE_API}/stamp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data.ok) {
+        if (statusEl) statusEl.textContent = "Assert failed";
+        if (outEl) outEl.textContent = JSON.stringify(data, null, 2);
+        return;
+      }
+
+      // We expect "issued" to contain at least one active stamp token.
+      // If it's empty, UI can't proceed to first-vote without another change.
+      const stamp = Array.isArray(data.issued) && data.issued[0] ? data.issued[0] : "";
+      EPHEMERAL_STAMP = stamp;
+
+      if (statusEl) statusEl.textContent = stamp ? "Asserted (stamp ready)" : "Asserted (no stamp issued)";
+      if (outEl) outEl.textContent = JSON.stringify({ ok: true, stamp_ready: !!stamp }, null, 2);
+    } catch (e) {
+      if (statusEl) statusEl.textContent = "Assert failed (network)";
+      if (outEl) outEl.textContent = String(e);
+    }
+  }
 
   // =========================
   // Helpers: tokens
@@ -273,33 +488,54 @@
     if (!containerEl) return;
     containerEl.innerHTML = "";
 
-    const opts = (poll?.options || []);
-    for (const opt of opts) {
-      const label = opt?.label ?? opt;
+    const opts = Array.isArray(poll?.options) ? poll.options : [];
+
+    for (let i = 0; i < opts.length; i++) {
+      const opt = opts[i];
+
+      const label = (opt && typeof opt === "object" && opt.label != null)
+        ? String(opt.label)
+        : String(opt);
+
+      // Remote polls often have option ids; local polls usually don't.
+      const optionId = (opt && typeof opt === "object" && opt.id != null)
+        ? String(opt.id)
+        : String(i + 1);
+
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = label;
 
-      // Visual selection (uses existing CSS classes)
-      if (selectedLabel && String(label) === String(selectedLabel)) {
-        b.className = "btn-primary";
-      } else {
-        b.className = "btn-ghost";
-      }
+      // Visual selection
+      b.className = (selectedLabel && String(label) === String(selectedLabel))
+        ? "btn-primary"
+        : "btn-ghost";
 
-      b.onclick = () => castVote(poll, label);
+      b.onclick = () => castVote(poll, optionId, label);
+
       containerEl.appendChild(b);
     }
   }
-
+ 
   // =========================
   // Exchange: vote by label (used by Assert carry-forward)
   // =========================
   async function castExchangeVoteByLabel(poll, choiceLabel, statusEl) {
-    const pollId = poll?.id;
+    const pollId =
+      poll?.meta?.exchange_poll_id ||
+      poll?.meta?.exchange_id ||
+      poll?.exchange_poll_id ||
+      poll?.exchange_id ||
+      poll?.id;
+
+    // Safety: never try to vote a local_* id against the Exchange
+    if (String(pollId).startsWith("local_")) {
+      if (statusEl) statusEl.textContent = "This poll is local-only (not on exchange yet).";
+      return { ok: false, error: "local_poll_id_not_valid_on_exchange" };
+    }
+
     if (!pollId) return { ok: false, error: "missing poll id" };
 
-    const auth = getExchangeBasicAuthHeaderOrNull();
     const voter_token = getToken(pollId);
 
     const opts = (poll.options || []);
@@ -311,27 +547,65 @@
       ? String(optObj.id)
       : String(idx + 1);
 
-    const payload = voter_token ? { option_id, voter_token } : { option_id };
+    // Body no longer includes voter_token; revote uses X-Voter-Token header.
+    const payload = { option_id };
 
-    // Ensure we have a stamp to vote with
-    const stamp = await getOrFetchOneStampOrNull();
-    if (!stamp) return { ok: false, error: "no stamp" };
+    // First vote needs X-Stamp; revote uses X-Voter-Token
+    let stamp = null;
+    const headers = { "Content-Type": "application/json" };
+
+    if (voter_token) {
+      headers["X-Voter-Token"] = String(voter_token);
+    } else {
+      stamp = await getOrFetchOneStampOrNull();
+      if (!stamp) return { ok: false, error: "no stamp" };
+      headers["X-Stamp"] = stamp;
+    }
+
+    console.log("[stamp] pool_after_pick=", getExchangeStampPool().length, "stamp=", String(stamp || "").slice(0, 12));
+    console.log("[vote] pollId=", pollId, "option_id=", option_id, "using=", voter_token ? "X-Voter-Token" : "X-Stamp");
 
     const r = await fetch(`${EXCHANGE_API}/polls/${pollId}/vote`, {
       method: "POST",
-      headers: auth
-        ? { "Content-Type": "application/json", "Authorization": auth, "X-Stamp": stamp }
-        : { "Content-Type": "application/json", "X-Stamp": stamp },
+      headers,
       body: JSON.stringify(payload),
     });
 
     const rawBody = await r.text();
 
     if (!r.ok) {
-      // visible failure, but do not roll back publish
-      if (statusEl) statusEl.textContent = `Vote carry failed (${r.status}). Poll is live.`;
+      // If we tried to do a FIRST vote with a stamp and got rejected,
+      // our local stamp pool is probably stale. Clear it and retry once.
+      if (!voter_token && r.status === 403) {
+        try { clearExchangeStampPool(); } catch {}
+        try {
+          const stamp2 = await getOrFetchOneStampOrNull();
+          if (stamp2) {
+            const headers2 = { "Content-Type": "application/json", "X-Stamp": stamp2 };
+            const r2 = await fetch(`${EXCHANGE_API}/polls/${pollId}/vote`, {
+              method: "POST",
+              headers: headers2,
+              body: JSON.stringify(payload),
+            });
+
+            const raw2 = await r2.text();
+            if (r2.ok) {
+              let data2 = null;
+              try { data2 = JSON.parse(raw2); } catch {}
+              if (data2?.voter_token) setToken(pollId, data2.voter_token);
+              setRemoteLastChoice(pollId, choiceLabel);
+              return { ok: true };
+            }
+          }
+        } catch (_) {
+          // fall through to normal failure below
+        }
+      }
+
+      if (statusEl) statusEl.textContent = `Vote failed (${r.status}).`;
       return { ok: false, error: rawBody || String(r.status) };
     }
+
 
     let data = null;
     try { data = JSON.parse(rawBody); } catch { data = null; }
@@ -343,23 +617,35 @@
   }
 
   // =========================
-  // Exchange operator write-gate (TEMPORARY)
+  // Exchange Identity (HMAC client creds stored locally)
   // =========================
-  // Purpose: prevent unauthenticated public writes to the exchange (anti-vandalism).
-  // This is NOT identity, legitimacy, delta, or vote-weighting.
-  // Replace later with governance-native mechanisms.
-  function getExchangeBasicAuthHeaderOrNull() {
-    const user = (localStorage.getItem("exchange_basic_user") || "").trim();
-    const pass = (localStorage.getItem("exchange_basic_pass") || "").trim();
-    if (!user || !pass) return null;
-    // btoa expects latin1; keep creds ASCII for now.
-    return "Basic " + btoa(user + ":" + pass);
+  const LS_EXCHANGE_SELF_ID = "exchange_self_id";
+  const LS_EXCHANGE_SIGNING_KEY = "exchange_signing_key";
+  const LS_EXCHANGE_PUBLIC_ALIAS = "exchange_public_alias";
+
+  function getExchangeSelfIdOrNull() {
+    const v = (localStorage.getItem(LS_EXCHANGE_SELF_ID) || "").trim();
+    return v || null;
   }
 
+  function getExchangeSigningKeyOrNull() {
+    const v = (localStorage.getItem(LS_EXCHANGE_SIGNING_KEY) || "").trim();
+    return v || null;
+  }
 
-  // =========================
+  function getExchangeAliasOrNull() {
+    const v = (localStorage.getItem(LS_EXCHANGE_PUBLIC_ALIAS) || "").trim();
+    return v || null;
+  }
+
+  function getExchangeHmacCredsOrNull() {
+    const self_id = getExchangeSelfIdOrNull();
+    const signing_key = getExchangeSigningKeyOrNull();
+    if (!self_id || !signing_key) return null;
+    return { self_id, signing_key };
+  }
+
   // UI helpers
-  // =========================
   // =========================
   // Results normalization + rendering (Weighted-first)
   // =========================
@@ -590,6 +876,52 @@
     }
   }
 
+  async function castExchangeVote(poll, optionId, statusEl) {
+    const pollId = poll?.meta?.exchange_poll_id || poll?.id;
+    if (!pollId) throw new Error("missing poll id");
+    if (String(pollId).startsWith("local_")) {
+      if (statusEl) statusEl.textContent = "Poll is not on Exchange yet.";
+      return { ok: false, error: "local_id_on_exchange" };
+    }
+
+    const headers = { "Content-Type": "application/json" };
+
+    const voterToken = getVoterToken(pollId);
+    if (voterToken) {
+      headers["X-Voter-Token"] = voterToken;
+    } else {
+      if (!EPHEMERAL_STAMP) {
+        throw new Error("must assert before first vote");
+      }
+      headers["X-Stamp"] = EPHEMERAL_STAMP;
+    }
+
+    const res = await fetch(`${EXCHANGE_API}/polls/${pollId}/vote`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ option_id: String(optionId) }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok || !data.ok) {
+      if (headers["X-Voter-Token"] && data?.error === "invalid X-Voter-Token") {
+        clearVoterToken(pollId);
+      }
+      throw new Error(data?.error || "vote failed");
+    }
+
+    if (data.voter_token) setVoterToken(pollId, data.voter_token);
+
+    // Shred stamp after first successful vote
+    if (!headers["X-Voter-Token"]) {
+      EPHEMERAL_STAMP = "";
+    }
+
+    return data;
+  }
+
+
   // =========================
   // Quill (optional)
   // =========================
@@ -671,29 +1003,28 @@
   }
 
   async function fetchStampsFromExchange() {
-    const auth = getExchangeBasicAuthHeaderOrNull();
-    if (!auth) throw new Error("Missing Exchange Basic Auth in localStorage.");
+    // HMAC identity required to mint stamps on the Exchange
+    const creds = getExchangeHmacCredsOrNull();
+    if (!creds) throw new Error("Missing Exchange identity (self_id / signing_key).");
 
-    const r = await fetch("https://exchange.breadstandard.com/api/stamp", {
+    const r = await exchangeFetchAuthed("/stamp", {
       method: "POST",
-      headers: {
-        "Authorization": auth,
-        "Content-Type": "application/json",
-      },
-      body: "{}",
+      body: {}, // empty JSON object
     });
-
-    // If auth is wrong, Exchange is behind Caddy so you’ll see 401
-    if (!r.ok) {
-      const t = await r.text().catch(() => "");
-      throw new Error(`Stamp request failed (${r.status}). ${t}`);
-    }
 
     const data = await r.json();
 
-    // Expected: { ok:true, persona_id, issued:[...], ... }
+    // Expected: { ok:true, issued:[...], issued_weights, issued_weight_combined, ... }
     if (data && data.persona_id) localStorage.setItem(LS_EXCHANGE_PERSONA_ID, data.persona_id);
     if (data && Array.isArray(data.issued) && data.issued.length) addStampsToPool(data.issued);
+    // Store "last computed" stats for Settings page (local-only)
+    try {
+      if (data?.issued_weight_combined != null) localStorage.setItem("exchange_last_weight_combined", String(data.issued_weight_combined));
+      if (data?.issued_weights && typeof data.issued_weights === "object") {
+        localStorage.setItem("exchange_last_issued_weights", JSON.stringify(data.issued_weights));
+      }
+      localStorage.setItem("exchange_last_stamp_ts", String(Date.now()));
+    } catch {}
 
     return data;
   }
@@ -964,8 +1295,9 @@
     const isLocal = !!localPoll?.is_local || String(pollId).startsWith("local_");
     if (!isLocal) { if (out) out.textContent = "Already asserted."; return; }
 
-    const auth = getExchangeBasicAuthHeaderOrNull();
-    if (!auth) { if (out) out.textContent = "Missing exchange credentials."; return; }
+    // HMAC identity is required to assert a local poll to the Exchange
+    const creds = getExchangeHmacCredsOrNull();
+    if (!creds) { if (out) out.textContent = "Missing identity: create/import an Exchange identity first."; return; }
     
     const localChoice = getLocalSelectedChoice(localPoll);
 
@@ -1013,7 +1345,19 @@
                 const list2 = await rList2.json();
                 const polls2 = Array.isArray(list2?.polls) ? list2.polls : [];
                 const fullRemote = polls2.find(p => String(p?.id) === String(found.id));
-                if (fullRemote) await castExchangeVoteByLabel(fullRemote, localChoice, out);
+                if (fullRemote) {
+                  const r = await castExchangeVoteByLabel(fullRemote, localChoice, out);
+
+                  // Ensure UI shows the selection after carry-forward
+                  const vb = document.getElementById("voteButtons");
+                  if (vb) renderVoteButtons(vb, fullRemote, localChoice);
+
+                  // (optional) also refresh results immediately from the returned payload
+                  if (r?.results) {
+                    updatePollResults(fullRemote.id, r.results);
+                    renderPrettyResults(fullRemote, normalizeResults(r.results));
+                  }
+                }
               }
             } catch (e) {
               if (out) out.textContent = "Vote carry failed (network). Poll is live.";
@@ -1050,10 +1394,9 @@
     };
 
     try {
-      const r = await fetch(`${EXCHANGE_API}/polls`, {
+      const r = await exchangeFetchAuthed("/polls", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": auth },
-        body: JSON.stringify(payload),
+        body: payload,
       });
 
       const raw = await r.text();
@@ -1075,7 +1418,15 @@
       if (localChoice) {
         if (out) out.textContent = "Poll live — casting your vote…";
         try {
-          await castExchangeVoteByLabel(remotePoll, localChoice, out);
+          const r = await castExchangeVoteByLabel(remotePoll, localChoice, out);
+
+          const vb = document.getElementById("voteButtons");
+          if (vb) renderVoteButtons(vb, remotePoll, localChoice);
+
+          if (r?.results) {
+            updatePollResults(remotePoll.id, r.results);
+            renderPrettyResults(remotePoll, normalizeResults(r.results));
+          }
         } catch (e) {
           if (out) out.textContent = "Vote carry failed (network). Poll is live.";
           console.warn(e);
@@ -1100,9 +1451,9 @@
     const pool = getExchangeStampPool();
     if (pool.length) return pickOneStampOrNull();
 
-    // If we have creds, try to fetch stamps.
-    const auth = getExchangeBasicAuthHeaderOrNull();
-    if (!auth) return null;
+    // If we have an identity (HMAC creds), try to mint stamps.
+    const creds = getExchangeHmacCredsOrNull();
+    if (!creds) return null;
 
     try {
       await fetchStampsFromExchange();
@@ -1113,123 +1464,64 @@
     }
   }
  
-  async function castVote(poll, choice) {
-    const pollId = poll.id;
-    const isLocal = !!poll.is_local || String(pollId).startsWith("local_");
-    const out = document.getElementById("voteOut");
-    const resultsBox = document.getElementById("resultsBox");
+  async function castVote(poll, optionId, labelForUI) {
+    const statusEl = document.getElementById("voteStatus");
 
-    if (out) out.textContent = "Submitting…";
+    const pollId = poll?.id;
+    if (!pollId) return;
 
+    const isLocal = !!poll?.is_local || String(pollId).startsWith("local_");
+
+    // -------------------------
+    // LOCAL VOTE PATH
+    // -------------------------
     if (isLocal) {
-      const token = ensureLocalToken(pollId);
-      setLocalVote(pollId, token, choice, poll.options || []);
-      if (out) out.textContent = "Voted (local).";
+      try {
+        // Store the selection locally so assert can carry it forward later
+        const token = ensureLocalToken(pollId);
 
-      const res = buildLocalResults(poll);
-      const norm = normalizeResults(res);
-      renderPrettyResults(poll, norm);
+        // Local polls: options are usually ["Yes","No"] etc.
+        const labels = (poll?.options || []).map(o => (o?.label ?? o));
 
+        setLocalVote(pollId, token, String(labelForUI), labels);
+
+        // Re-render buttons with highlight
+        const vb = document.getElementById("voteButtons");
+        if (vb) renderVoteButtons(vb, poll, String(labelForUI));
+
+        // Re-render local results immediately
+        const res = buildLocalResults(poll);
+        const norm = normalizeResults(res);
+        renderPrettyResults(poll, norm);
+
+        if (statusEl) statusEl.textContent = "Saved locally.";
+      } catch (e) {
+        if (statusEl) statusEl.textContent = String(e);
+        console.log(e);
+      }
       return;
     }
 
-
-    // Remote best-effort
-    const auth = getExchangeBasicAuthHeaderOrNull();
-    const voter_token = getToken(pollId);
-
-    // Map the clicked label -> exchange option_id.
-    // Exchange polls use option objects: { id: "1", label: "Yes" }.
-    // Local polls use string options; on assert we preserve ordering.
-    const opts = (poll.options || []);
-    const idx = opts.findIndex(o => (o?.label ?? o) === choice);
-    if (idx < 0) { if (out) out.textContent = "Vote failed (bad option)."; return; }
-
-    const optObj = opts[idx];
-    const option_id = (optObj && typeof optObj === "object" && optObj.id != null)
-      ? String(optObj.id)
-      : String(idx + 1); // fallback to 1-based ordering
-    const payload = voter_token ? { option_id, voter_token } : { option_id };
-
+    // -------------------------
+    // REMOTE (EXCHANGE) VOTE PATH
+    // -------------------------
     try {
-      // --- STAMP (behind the curtain) ---
-      // If we have no stamps yet, try to fetch them.
-      // Then pick one stamp to use for this vote.
-      const stamp = await getOrFetchOneStampOrNull();
-      if (!stamp) {
-        if (out) out.textContent = "Vote blocked: could not obtain stamp.";
-        console.log("Vote blocked: no stamp available (missing creds or stamp fetch failed).");
-        return;
+      const result = await castExchangeVoteByLabel(poll, labelForUI, statusEl);
+
+      // After a successful vote, refresh the poll view so results + highlight update
+      if (result?.ok) {
+        setRemoteLastChoice(pollId, labelForUI);
+
+        // Force a quick refresh of the remote poll list (so results appear)
+        try { await refreshPolls(); } catch {}
+
+        // Re-open the poll using the id we just voted on
+        try { await openPoll({ id: pollId, is_local: false }); } catch {}
       }
-
-      const r = await fetch(`${EXCHANGE_API}/polls/${pollId}/vote`, {
-        method: "POST",
-
-        // OPERATOR WRITE-GATE (TEMPORARY)
-        // Purpose: prevent unauthenticated public writes to the exchange (anti-vandalism).
-        // This is NOT identity, legitimacy, delta, or vote-weighting.
-        //
-        // Replace later with governance-native mechanisms:
-        // 1) Poll-scoped capability tokens issued at ASSERT:
-        //    - manage_token (COOL / CLOSE / steward actions for this poll)
-        //    - appeal_token (APPEAL for this poll)
-        // 2) Delegation + recall/override during COOLING (constituent correction signal)
-        // 3) Steward rekey via electorate vote (supermajority + quorum + timeout)
-        // 4) Validator/claim attestations that grant *power points* (capped per person) and
-        //    feed exchange-to-exchange legitimacy comparisons (delta vectors).
-        //
-        // Until those exist, Basic Auth is just an operator gate on writes.
-        // Reads can remain public.
-
-        headers: auth
-          ? {
-              "Content-Type": "application/json",
-              "Authorization": auth,
-              "X-Stamp": stamp,
-            }
-          : {
-              "Content-Type": "application/json",
-              "X-Stamp": stamp,
-            },
-
-        body: JSON.stringify(payload),
-      });
-
-      const rawBody = await r.text();
-
-      if (!r.ok) {
-        // If Exchange says the stamp is invalid, purge local pool and force re-mint next time.
-        // (This prevents getting stuck permanently using a stale stamp.)
-        if (r.status === 403 && rawBody.includes("invalid X-Stamp")) {
-          clearExchangeStampPool();
-          console.log("Cleared stale stamp pool (invalid X-Stamp). Vote again to re-mint.");
-          if (out) out.textContent = "Stamp expired. Vote again.";
-          return;
-        }
-
-        if (out) out.textContent = `Vote failed (${r.status}).`;
-        console.log("Vote failed:", r.status, rawBody);
-        return;
-      }
-
-      let data = null;
-      try { data = JSON.parse(rawBody); } catch { data = null; }
-      if (data?.voter_token) setToken(pollId, data.voter_token);
-
-      // UI hint (not authoritative): remember last choice for this poll
-      setRemoteLastChoice(pollId, choice);
-
-      // Re-render buttons so selection is obvious immediately
-      const vbNow = document.getElementById("voteButtons");
-      if (vbNow) renderVoteButtons(vbNow, poll, choice);
-
-      if (out) out.textContent = "Voted.";
-
     } catch (e) {
-      if (out) out.textContent = "Vote failed (network error).";
+      if (statusEl) statusEl.textContent = String(e);
       console.log(e);
     }
-  
   }
 
   // =========================
@@ -1273,23 +1565,6 @@
     if (listCard) listCard.style.display = "none";
     if (pollView) pollView.style.display = "block";
     inPollDetail = true;
-  }
-
-
-  function showPollDetail() {
-    const listCard = document.getElementById("pollsListCard");
-    const pollView = document.getElementById("pollView");
-    if (listCard) listCard.style.display = "none";
-    if (pollView) pollView.style.display = "block";
-    inPollDetail = true;
-  }
-
-  function showPollList() {
-    const listCard = document.getElementById("pollsListCard");
-    const pollView = document.getElementById("pollView");
-    if (listCard) listCard.style.display = "block";
-    if (pollView) pollView.style.display = "none";
-    inPollDetail = false;
   }
 
   // =========================
@@ -1348,6 +1623,104 @@
         if (publishEl) publishEl.onchange = syncPublishUi;
         syncPublishUi();
     }
+
+    // =========================
+    // Settings: Identity wiring (device-local)
+    // =========================
+    const identityDisplayNameEl = document.getElementById("identityDisplayName");
+    const identityPasswordEl = document.getElementById("identitySigningKey"); // UX label is "Password"
+    const createIdentityBtn = document.getElementById("createIdentityBtn");
+    const copyRecoveryBtn = document.getElementById("copyIdentityBackupBtn");
+    const identityStatus = document.getElementById("identityStatus");
+    const exchangeStatus = document.getElementById("exchangeStatus"); // optional status line on Settings
+
+    // Load saved display name
+    if (identityDisplayNameEl) {
+      identityDisplayNameEl.value = (localStorage.getItem("exchange_display_name") || "");
+      identityDisplayNameEl.onchange = () => {
+        localStorage.setItem("exchange_display_name", String(identityDisplayNameEl.value || "").trim());
+      };
+    }
+
+    // If identity exists, hide Create button.
+    const refreshIdentityUi = () => {
+      const has = !!getExchangeHmacCredsOrNull();
+      if (createIdentityBtn) createIdentityBtn.style.display = has ? "none" : "";
+      if (copyRecoveryBtn) copyRecoveryBtn.style.display = has ? "" : "none";
+      if (identityPasswordEl) {
+        // Never show the stored signing key; just show a neutral placeholder
+        identityPasswordEl.value = "";
+        identityPasswordEl.placeholder = has
+          ? "Identity is stored on this device. Use Copy Recovery Code if needed."
+          : "Create identity to enable Exchange actions (or paste recovery key + save).";
+      }
+      if (identityStatus) identityStatus.textContent = has
+        ? "Identity loaded (details hidden)."
+        : "No identity on this device.";
+    };
+
+    // Allow “import” by pasting the signing key and hitting Enter (MVP).
+    // NOTE: Without self_id we can’t sign; so this is placeholder until we add full recovery paste format.
+    if (identityPasswordEl) {
+      identityPasswordEl.onkeydown = (ev) => {
+        if (ev.key === "Enter") {
+          // We intentionally do NOT support partial import here yet.
+          // Recovery is via the copied JSON blob (next button).
+          if (identityStatus) identityStatus.textContent = "Use Copy Recovery Code to backup, or Create Identity to generate.";
+        }
+      };
+    }
+
+    if (createIdentityBtn) {
+      createIdentityBtn.onclick = async () => {
+        try {
+          if (createIdentityBtn) createIdentityBtn.disabled = true;
+          const data = await exchangeCreateIdentityWithPow(identityStatus);
+          if (identityStatus) identityStatus.textContent = "Identity created. Copy your recovery code now.";
+          refreshIdentityUi();
+
+          // Seed stats placeholders (we will populate from stamps after first assert/mint)
+          const tp = document.getElementById("statTrustPoints");
+          const et = document.getElementById("statEarnedTrust");
+          const dt = document.getElementById("statDelegatedTrust");
+          if (tp) tp.textContent = "1";
+          if (et) et.textContent = "—";
+          if (dt) dt.textContent = "—";
+
+          if (exchangeStatus) exchangeStatus.textContent = "Identity ready. Assert will mint stamps as needed.";
+        } catch (e) {
+          if (identityStatus) identityStatus.textContent = String(e?.message || e);
+        } finally {
+          if (createIdentityBtn) createIdentityBtn.disabled = false;
+        }
+      };
+    }
+
+    if (copyRecoveryBtn) {
+      copyRecoveryBtn.onclick = async () => {
+        try {
+          const self_id = getExchangeSelfIdOrNull();
+          const signing_key = getExchangeSigningKeyOrNull();
+          const public_alias = getExchangeAliasOrNull();
+
+          if (!self_id || !signing_key) {
+            if (identityStatus) identityStatus.textContent = "No identity to back up.";
+            return;
+          }
+
+          // Copy a JSON blob (human-auditable)
+          const blob = JSON.stringify({ self_id, signing_key, public_alias }, null, 2);
+
+          await copyTextToClipboardOrThrow(blob);
+
+          if (identityStatus) identityStatus.textContent = "Recovery code copied to clipboard. Store it safely.";
+        } catch (e) {
+          if (identityStatus) identityStatus.textContent = `Copy failed: ${String(e?.message || e)}`;
+        }
+      };
+    }
+
+    refreshIdentityUi();
 
     // Close poll view
     const closeBtn = document.getElementById("closePoll");
@@ -1489,25 +1862,6 @@
     refreshPolls().then(openFromHash).catch(() => {});
   }
 
-  // Try to get stamps once on startup, BUT ONLY if exchange creds exist.
-  // This prevents creating personas/stamps just because the app was opened.
-  (async () => {
-    try {
-      // If user hasn't configured exchange creds, don't do anything.
-      const auth = getExchangeBasicAuthHeaderOrNull();
-      if (!auth) return;
-
-      // Optional: only fetch if the user has explicitly enabled publish mode
-      const publishEl = document.getElementById("publishToExchange");
-      if (publishEl && !publishEl.checked) return;
-
-      const pool = getExchangeStampPool();
-      if (!pool.length) await fetchStampsFromExchange();
-    } catch (e) {
-      console.warn("Exchange stamp init failed:", e);
-    }
-  })();
-
-  // IMPORTANT: event hook is inside this IIFE (scope-safe)
+    // IMPORTANT: event hook is inside this IIFE (scope-safe)
   window.addEventListener("legacy:injected", initLegacyUI);
 })();

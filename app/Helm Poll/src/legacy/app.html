@@ -217,25 +217,62 @@
             Minimal in Phase 1. Intended to split later.
           </div>
 
-          <h3 style="margin-top:6px;">Stamp Status</h3>
-          <!-- JS can populate these if available; otherwise show fallback -->
-          <div id="stampStatus" class="muted">No stamp loaded.</div>
+          <h3 style="margin-top:6px;">Identity</h3>
+          <div class="muted2" style="font-size:12px; margin-bottom:10px;">
+            Stored locally on this device. Your signing key is shown only once on creation.
+          </div>
 
-          <div id="stampDetails" class="muted2" style="margin-top:10px; display:none;">
-            <div><strong>Token present:</strong> <span id="stampTokenPresent">unknown</span></div>
-            <div><strong>Weight:</strong> <span id="stampWeight">unknown</span></div>
-            <div><strong>Tags:</strong> <span id="stampTags">unknown</span></div>
+          <div class="grid">
+            <div class="row">
+              <label class="muted" style="min-width:140px;">Display name</label>
+              <input id="identityDisplayName" placeholder="Optional: name shown in the UI (local only)" />
+            </div>
+
+            <div class="row">
+              <label class="muted" style="min-width:140px;">Password</label>
+              <input id="identitySigningKey" placeholder="Created once; keep it safe. Used to sign requests." type="password" />
+            </div>
+
+            <div class="row" style="gap:10px; flex-wrap:wrap;">
+              <button id="createIdentityBtn" type="button">Create Identity</button>
+              <button id="copyIdentityBackupBtn" type="button" class="btn-ghost">Copy Recovery Code</button>
+            </div>
+
+            <div id="identityStatus" class="muted"></div>
           </div>
 
           <hr />
 
-          <h3>Admin Mode (future)</h3>
+          <div id="exchangeStatus" class="muted" style="margin-top:10px;"></div>
+          
+          <div class="row" style="gap:10px; flex-wrap:wrap; margin-top:10px;">
+            <div class="card" style="padding:10px; min-width:160px;">
+              <div class="muted2" style="font-size:12px;">TRUST POINTS</div>
+              <div id="statTrustPoints" style="font-size:18px; font-weight:600;">1</div>
+            </div>
+            <div class="card" style="padding:10px; min-width:160px;">
+              <div class="muted2" style="font-size:12px;">Earned Trust</div>
+              <div id="statEarnedTrust" style="font-size:18px; font-weight:600;">—</div>
+            </div>
+            <div class="card" style="padding:10px; min-width:160px;">
+              <div class="muted2" style="font-size:12px;">Delegated Trust</div>
+              <div id="statDelegatedTrust" style="font-size:18px; font-weight:600;">—</div>
+            </div>
+          </div>
+          
+          <hr />
+
+          <h3>Admin</h3>
           <div class="muted2" style="font-size:12px; margin-bottom:10px;">
-            Phase 1 rule: UI-only toggle. No auth changes. No password stored.
+            Operator key is stored for this browser session only.
           </div>
 
-          <button id="adminToggle" type="button" class="btn-ghost">Enable Admin Mode (UI only)</button>
-          <div id="adminStatus" class="muted" style="margin-top:10px;">Admin mode disabled.</div>
+          <div class="row" style="gap:10px; flex-wrap:wrap;">
+            <input id="operatorKeyInput" placeholder="Operator key (session only)" type="password" style="flex:1; min-width:220px;" />
+            <button id="enterAdminBtn" type="button" class="btn-ghost">Enter Admin Panel</button>
+          </div>
+
+          <div id="adminStatus" class="muted" style="margin-top:10px;">Admin mode inactive.</div>
         </div>
       </section>
 

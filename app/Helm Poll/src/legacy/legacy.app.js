@@ -1123,6 +1123,8 @@ function setAdminEnabled(enabled) {
 
             if (vb) {
               renderVoteButtons(vb, full, getRemoteLastChoice(pollId));
+              // Authoritative selection rehydrate (requires identity)
+              await fetchRemoteMyBallotAndApplySelection(full, pollId, vb);
             }
 
             if (full?.results) {
@@ -1137,11 +1139,13 @@ function setAdminEnabled(enabled) {
       }    
       // Fetch results once (works even if SSE stream is missing)
       await fetchRemoteResultsOnceAndRender(full, pollId);
+      // Authoritative selection rehydrate (requires identity)
+      if (vb) await fetchRemoteMyBallotAndApplySelection(full, pollId, vb);
 
       // Remote stream (optional)
       try {
         es = new EventSource(`https://exchange.breadstandard.com/api/polls/${pollId}/stream`);
-        es.addEventListener("poll", (ev) => {
+        es.addEventListener("poll", async (ev) => {
           try {
             const obj = JSON.parse(ev.data);
             if (obj?.poll) {
@@ -1151,6 +1155,8 @@ function setAdminEnabled(enabled) {
               if (pollMeta) pollMeta.textContent = `${pt} • Remote`;
               if (vb) {
                 renderVoteButtons(vb, full, getRemoteLastChoice(pollId));
+                // Authoritative selection rehydrate (requires identity)
+                await fetchRemoteMyBallotAndApplySelection(full, pollId, vb);
               }
 
             }
@@ -1202,6 +1208,45 @@ function setAdminEnabled(enabled) {
       return false;
     }
   }
+
+  // =========================
+  // Remote selection hydration (authoritative; requires HMAC identity)
+  // =========================
+  async function fetchRemoteMyBallotAndApplySelection(poll, pollId, vb) {
+    try {
+      // If no identity, we can't ask "my ballot" (identity-only endpoint).
+      if (!getExchangeHmacCredsOrNull()) return false;
+
+      const r = await exchangeFetchAuthed(`/polls/${encodeURIComponent(String(pollId))}/my-ballot`, { method: "GET" });
+      if (!r.ok) return false;
+
+      const data = await r.json().catch(() => null);
+      if (!data?.ok) return false;
+      if (!data?.has_vote) return true; // authoritative "no vote" is still useful
+
+      const optionId = String(data.option_id || "");
+      if (!optionId) return true;
+
+      // Best-effort label mapping (server may include option_label; otherwise map via poll options)
+      let label = (typeof data.option_label === "string") ? data.option_label : "";
+      if (!label && poll?.options) {
+        const opt = (poll.options || []).find(o => String(o?.id) === optionId);
+        if (opt && typeof opt.label !== "undefined") label = String(opt.label);
+      }
+
+      if (label && vb) {
+        // Persist as a convenience hint, but now backed by authoritative server truth.
+        setRemoteLastChoice(String(pollId), label);
+        renderVoteButtons(vb, poll, label);
+      }
+
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+
 
   // =========================
   // Remote voting with one-step self-heal

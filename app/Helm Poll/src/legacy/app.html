@@ -261,18 +261,55 @@
           </div>
           
 
-          <h3 style="margin-top:6px;">Stamps</h3>
-          <div class="muted2" style="font-size:12px; margin-bottom:10px;">
-            Stamps are ephemeral. The app hides stamp tokens and mints only when needed.
-          </div>
+          <h3 style="margin-top:6px;">Admin Mode</h3>
+<div class="muted2" style="font-size:12px; margin-bottom:10px;">
+  Admin Mode is session-only. Operator key is kept in memory and not saved.
+</div>
 
-          <div class="row" style="gap:10px; flex-wrap:wrap;">
-            <button id="mintStampBtn" type="button" class="btn-ghost">Mint Stamp</button>
-            <button id="clearStampsBtn" type="button" class="btn-ghost">Clear Stamps</button>
-            <span id="stampStatus" class="muted"></span>
-          </div>
+<div class="row" style="gap:10px; flex-wrap:wrap; align-items:center;">
+  <input id="operatorKeyInput" type="password" placeholder="Operator key (session only)" style="min-width:260px;" />
+  <button id="adminToggleBtn" type="button" class="btn-ghost">Enable Admin Mode</button>
+  <span id="adminStatus" class="muted"></span>
+</div>
 
-          <hr />
+<div id="adminOnlySection" style="display:none; margin-top:14px;">
+  <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+    <span class="pill" style="background:#ffefe0; color:#7a3b00; border:1px solid #ffcfad; padding:2px 8px; border-radius:999px; font-size:12px;">
+      Admin Enabled
+    </span>
+    <span class="muted2" style="font-size:12px;">
+      Trust grants and debug tools are visible only in Admin Mode.
+    </span>
+  </div>
+
+  <h3 style="margin-top:6px;">Stamps (Debug)</h3>
+  <div class="muted2" style="font-size:12px; margin-bottom:10px;">
+    Stamp tokens are hidden. No manual minting is exposed here; only purge is available for debugging.
+  </div>
+
+  <div class="row" style="gap:10px; flex-wrap:wrap;">
+    <button id="clearStampsBtn" type="button" class="btn-ghost">Purge Stamps (Debug)</button>
+    <span id="stampStatus" class="muted"></span>
+  </div>
+
+  <hr />
+
+  <h3 style="margin-top:6px;">Trust Admin</h3>
+  <div class="muted2" style="font-size:12px; margin-bottom:10px;">
+    Grant or revoke earned trust for a public alias. Requires Operator Key.
+  </div>
+
+  <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center;">
+    <input id="trustTargetAliasInput" type="text" placeholder="Target public_alias (a_...)" style="min-width:220px;" />
+    <input id="trustDeltaInput" type="number" step="1" placeholder="Delta (e.g. 1 or -1)" style="width:160px;" />
+    <input id="trustReasonInput" type="text" placeholder="Reason" style="min-width:260px;" />
+    <button id="trustApplyBtn" type="button">Apply</button>
+  </div>
+
+  <div id="trustStatus" class="muted" style="margin-top:8px;"></div>
+</div>
+
+<hr />
 
           <h3 style="margin-top:6px;">Delegation</h3>
           <div class="muted2" style="font-size:12px; margin-bottom:10px;">
@@ -301,17 +338,7 @@
           <hr />
           <hr />
 
-          <h3>Admin</h3>
-          <div class="muted2" style="font-size:12px; margin-bottom:10px;">
-            Operator key is stored for this browser session only.
-          </div>
-
-          <div class="row" style="gap:10px; flex-wrap:wrap;">
-            <input id="operatorKeyInput" placeholder="Operator key (session only)" type="password" style="flex:1; min-width:220px;" />
-            <button id="enterAdminBtn" type="button" class="btn-ghost">Enter Admin Panel</button>
-          </div>
-
-          <div id="adminStatus" class="muted" style="margin-top:10px;">Admin mode inactive.</div>
+          
         </div>
       </section>
 

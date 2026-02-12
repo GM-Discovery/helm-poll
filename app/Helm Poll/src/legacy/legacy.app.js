@@ -1,6 +1,31 @@
 (() => {
   "use strict";
 
+// =========================
+// Admin Mode (session-only)
+// =========================
+// Operator key is kept ONLY in memory (never localStorage).
+let __adminEnabled = false;
+let __operatorKeyMem = "";
+
+function isAdminEnabled() { return !!__adminEnabled; }
+function setOperatorKeyMem(k) { __operatorKeyMem = String(k || "").trim(); }
+function getOperatorKeyMemOrNull() { return __operatorKeyMem ? __operatorKeyMem : null; }
+
+function setAdminEnabled(enabled) {
+  __adminEnabled = !!enabled;
+
+  // Toggle admin-only UI
+  const adminOnly = document.getElementById("adminOnlySection");
+  if (adminOnly) adminOnly.style.display = __adminEnabled ? "block" : "none";
+
+  const btn = document.getElementById("adminToggleBtn");
+  if (btn) btn.textContent = __adminEnabled ? "Disable Admin Mode" : "Enable Admin Mode";
+
+  const status = document.getElementById("adminStatus");
+  if (status) status.textContent = __adminEnabled ? "Admin mode enabled." : "Admin mode inactive.";
+}
+
   // =========================
   // Storage keys
   // =========================
@@ -37,9 +62,7 @@
       "refreshPolls",
       "assertBtn",
       "createIdentityBtn",
-      "copyIdentityBackupBtn",
-      "mintStampBtn",
-      "clearStampsBtn",
+      "copyIdentityBackupBtn",      "clearStampsBtn",
       "delegationSetBtn",
       "delegationRevokeBtn",
     ];
@@ -1657,7 +1680,10 @@
           if (createIdentityBtn) createIdentityBtn.disabled = true;
           const data = await exchangeCreateIdentityWithPow(identityStatus);
           if (identityStatus) identityStatus.textContent = "Identity created. Copy your recovery code now.";
-          refreshIdentityUi();
+      
+
+
+    refreshIdentityUi();
 
           // Seed stats placeholders (we will populate from stamps after first assert/mint)
           const tp = document.getElementById("statTrustPoints");
@@ -1701,42 +1727,143 @@
     }
 
     // =========================
-    // Settings: Stamps (ephemeral UX)
-    // =========================
-    const stampStatus = document.getElementById("stampStatus");
-    const mintStampBtn = document.getElementById("mintStampBtn");
-    const clearStampsBtn = document.getElementById("clearStampsBtn");
+    
 
-    const refreshStampUi = () => {
-      const n = getExchangeStampPool().length;
-      if (stampStatus) stampStatus.textContent = n ? "Stamp ready (hidden)." : "No stamp cached. Mint happens on-demand.";
-    };
 
-    if (mintStampBtn) {
-      mintStampBtn.onclick = async () => {
-        try {
-          setUiBusy(true, "Minting stamp…");
-          await fetchStampsFromExchange();
-          if (stampStatus) stampStatus.textContent = "Stamp minted (hidden).";
-        } catch (e) {
-          if (stampStatus) stampStatus.textContent = `Mint failed: ${String(e?.message || e)}`;
-        } finally {
-          setUiBusy(false, null);
-          refreshStampUi();
-        }
-      };
+// =========================
+// Settings: Admin Mode (session-only operator key)
+// =========================
+const operatorKeyInput = document.getElementById("operatorKeyInput");
+const adminToggleBtn = document.getElementById("adminToggleBtn");
+
+if (adminToggleBtn) {
+  adminToggleBtn.onclick = () => {
+    if (isAdminEnabled()) {
+      // Disable: wipe in-memory key and hide panels
+      setOperatorKeyMem("");
+      setAdminEnabled(false);
+      if (operatorKeyInput) operatorKeyInput.value = "";
+      return;
     }
 
-    if (clearStampsBtn) {
-      clearStampsBtn.onclick = () => {
-        clearExchangeStampPool();
-        refreshStampUi();
-      };
+    const k = (operatorKeyInput?.value || "").trim();
+    if (!k) {
+      const s = document.getElementById("adminStatus");
+      if (s) s.textContent = "Enter an operator key to enable Admin Mode.";
+      return;
     }
 
-    refreshStampUi();
+    setOperatorKeyMem(k);
+    setAdminEnabled(true);
 
-    // =========================
+    // Optional safety: clear the input box after enabling
+    if (operatorKeyInput) operatorKeyInput.value = "";
+  };
+} else {
+  // If the button isn't present, ensure admin-only sections are hidden.
+  setAdminEnabled(false);
+}
+
+// Ensure Admin Mode starts OFF on load.
+setOperatorKeyMem("");
+setAdminEnabled(false);
+
+// =========================
+// Settings: Trust Admin (grant/revoke earned trust)
+// =========================
+const trustTargetAliasInput = document.getElementById("trustTargetAliasInput");
+const trustDeltaInput = document.getElementById("trustDeltaInput");
+const trustReasonInput = document.getElementById("trustReasonInput");
+const trustApplyBtn = document.getElementById("trustApplyBtn");
+const trustStatus = document.getElementById("trustStatus");
+
+async function exchangeGrantTrust(public_alias, delta_weight, reason) {
+  const opKey = getOperatorKeyMemOrNull();
+  if (!isAdminEnabled() || !opKey) throw new Error("Admin Mode not enabled (operator key missing).");
+
+  const body = {
+    public_alias: String(public_alias || "").trim(),
+    delta_weight: Number(delta_weight),
+    reason: String(reason || "").trim(),
+  };
+
+  const r = await exchangeFetchAuthed("/identity/grant-trust", {
+    method: "POST",
+    body,
+    headers: { "X-Operator-Key": opKey },
+  });
+
+  const raw = await r.text().catch(() => "");
+  if (!r.ok) throw new Error(`Trust grant failed (${r.status}). ${raw}`);
+  try { return JSON.parse(raw); } catch { return { ok: true }; }
+}
+
+if (trustApplyBtn) {
+  trustApplyBtn.onclick = async () => {
+    try {
+      const alias = (trustTargetAliasInput?.value || "").trim();
+      const deltaRaw = (trustDeltaInput?.value || "").trim();
+      const reason = (trustReasonInput?.value || "").trim();
+
+      const delta = Number(deltaRaw);
+
+      if (!alias) { if (trustStatus) trustStatus.textContent = "Enter a target public_alias."; return; }
+      if (!Number.isFinite(delta) || !Number.isInteger(delta)) { if (trustStatus) trustStatus.textContent = "Delta must be an integer (e.g. 1 or -1)."; return; }
+      if (!reason) { if (trustStatus) trustStatus.textContent = "Enter a reason."; return; }
+
+      setUiBusy(true, "Applying trust grant…");
+      const data = await exchangeGrantTrust(alias, delta, reason);
+
+      if (trustStatus) {
+        // Show a tiny summary; backend fields may vary.
+        const applied = data?.issued_weights ? JSON.stringify(data.issued_weights) : "";
+        trustStatus.textContent = `Applied. ${applied}`.trim();
+      }
+    } catch (e) {
+      if (trustStatus) trustStatus.textContent = String(e?.message || e);
+    } finally {
+      setUiBusy(false, null);
+    }
+  };
+}
+
+// =========================
+// Settings: Stamps (debug only)
+// =========================
+// Stamps are still minted on-demand for normal voting,
+// but manual minting is NOT exposed in the UI.
+const stampStatus = document.getElementById("stampStatus");
+const clearStampsBtn = document.getElementById("clearStampsBtn");
+
+const refreshStampUi = () => {
+  if (!stampStatus) return;
+  const n = getExchangeStampPool().length;
+  stampStatus.textContent = n ? "Stamp cached (hidden)." : "No stamp cached.";
+};
+
+if (clearStampsBtn) {
+  clearStampsBtn.onclick = async () => {
+    try {
+      if (!isAdminEnabled()) {
+        if (stampStatus) stampStatus.textContent = "Enable Admin Mode to purge stamps.";
+        return;
+      }
+      setUiBusy(true, "Purging stamps…");
+      setExchangeStampPool([]);
+      refreshStampUi();
+      if (stampStatus) stampStatus.textContent = "Stamps purged.";
+    } catch (e) {
+      if (stampStatus) stampStatus.textContent = `Purge failed: ${String(e?.message || e)}`;
+    } finally {
+      setUiBusy(false, null);
+    }
+  };
+}
+
+// Keep status accurate on page load.
+refreshStampUi();
+
+// =========================
     // Settings: Delegation
     // =========================
     const delegateeAliasInput = document.getElementById("delegateeAliasInput");

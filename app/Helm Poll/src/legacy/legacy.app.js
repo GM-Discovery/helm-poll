@@ -34,6 +34,7 @@ function setAdminEnabled(enabled) {
   const LS_LOCAL_POLLS = "breadpoll_local_polls_v1"; // array of poll objects
   const LS_LOCAL_VOTES = "breadpoll_local_votes_v1"; // poll_id -> { byToken: {token: choice}, counts: {option: n} }
   const LS_REMOTE_LAST_CHOICE = "breadpoll_remote_last_choice_v1"; // poll_id -> last chosen label (UI hint only)
+  const LS_VOTE_SESSION = "breadpoll_vote_session_v0"; // poll_id -> { last_known_has_vote, stranded_reason, last_error_code }
 
   // =========================
   // API base selection (optional)
@@ -518,6 +519,92 @@ function setAdminEnabled(enabled) {
     return v ? String(v) : null;
   }
 
+
+  // =========================
+  // Helpers: vote session (authoritative-ish UI state)
+  // - Stores ONLY UI hints + last-known Exchange truth we learned.
+  // - Does NOT change Exchange state.
+  // =========================
+  function getVoteSessionMap() {
+    try { return JSON.parse(localStorage.getItem(LS_VOTE_SESSION) || "{}"); }
+    catch { return {}; }
+  }
+
+  function getVoteSession(pollId) {
+    const m = getVoteSessionMap();
+    const rec = m[String(pollId)] || {};
+    return {
+      last_known_has_vote: rec.last_known_has_vote === true,
+      stranded_reason: rec.stranded_reason || null, // "missing_token" | "invalid_token" | null
+      last_error_code: rec.last_error_code || null,
+      last_checked_at_ms: Number(rec.last_checked_at_ms || 0) || 0,
+    };
+  }
+
+  function patchVoteSession(pollId, patch) {
+    const id = String(pollId);
+    const m = getVoteSessionMap();
+    const prev = (m[id] && typeof m[id] === "object") ? m[id] : {};
+    const next = { ...prev, ...(patch || {}) };
+    m[id] = next;
+    localStorage.setItem(LS_VOTE_SESSION, JSON.stringify(m));
+    return next;
+  }
+
+  function clearVoteSession(pollId) {
+    const id = String(pollId);
+    const m = getVoteSessionMap();
+    if (Object.prototype.hasOwnProperty.call(m, id)) {
+      delete m[id];
+      localStorage.setItem(LS_VOTE_SESSION, JSON.stringify(m));
+    }
+  }
+
+  // =========================
+  // Poll status banner (minimal UI surface)
+  // =========================
+  function setPollStatus(code, messageOrNull) {
+    const banner = document.getElementById("pollStatusBanner");
+    const text = document.getElementById("pollStatusText");
+
+    if (!banner || !text) return;
+
+    if (!code) {
+      banner.style.display = "none";
+      text.textContent = "";
+      return;
+    }
+
+    banner.style.display = "block";
+    text.textContent = String(messageOrNull || "");
+  }
+
+  function markStranded(pollId, reason) {
+    patchVoteSession(pollId, {
+      stranded_reason: String(reason || "missing_token"),
+      last_error_code: (reason === "invalid_token") ? "STRANDED_INVALID_TOKEN" : "STRANDED_MISSING_TOKEN",
+    });
+
+    setPollStatus(
+      (reason === "invalid_token") ? "STRANDED_INVALID_TOKEN" : "STRANDED_MISSING_TOKEN",
+      "Exchange confirms you’ve voted. This device can’t change that vote because it doesn’t have your revote token. You can still view results. To change your vote, use the device that originally voted, or rebind (future)."
+    );
+  }
+
+  function clearStrandedUi(pollId) {
+    patchVoteSession(pollId, { stranded_reason: null, last_error_code: null });
+    setPollStatus(null, null);
+  }
+
+  function clearLocalVoteHintOnly(pollId, pollObjOrNull) {
+    const m = getRemoteLastChoiceMap();
+    delete m[String(pollId)];
+    localStorage.setItem(LS_REMOTE_LAST_CHOICE, JSON.stringify(m));
+
+    const vb = document.getElementById("voteButtons");
+    if (vb && pollObjOrNull) renderVoteButtons(vb, pollObjOrNull, null);
+  }
+
   // =========================
   // Helpers: local vote lookup (for assert carry-forward)
   // =========================
@@ -609,7 +696,7 @@ function setAdminEnabled(enabled) {
 
     if (statusEl) statusEl.textContent = "Casting vote on Exchange…";
 
-    const res = await exchangeVoteWithRetry(poll, String(pollId), option_id, choiceLabel, statusEl);
+    const res = await exchangeVoteWithRetry(poll, String(pollId), option_id, choiceLabel, statusEl, { allowStamp: true });
 
     if (!res?.ok) {
       if (statusEl) statusEl.textContent = "Poll live; vote not cast yet.";
@@ -1275,20 +1362,50 @@ function setAdminEnabled(enabled) {
   // =========================
   async function fetchRemoteMyBallotAndApplySelection(poll, pollId, vb) {
     try {
+      const pid = String(pollId);
+
       // If no identity, we can't ask "my ballot" (identity-only endpoint).
-      if (!getExchangeHmacCredsOrNull()) return false;
+      if (!getExchangeHmacCredsOrNull()) {
+        patchVoteSession(pid, { last_error_code: "NO_IDENTITY" });
+        // No banner by default; user can still view results.
+        return false;
+      }
 
-      const r = await exchangeFetchAuthed(`/polls/${encodeURIComponent(String(pollId))}/my-ballot`, { method: "GET" });
-      if (!r.ok) return false;
+      const r = await exchangeFetchAuthed(`/polls/${encodeURIComponent(pid)}/my-ballot`, { method: "GET" });
+      const raw = await r.text().catch(() => "");
+      let data = null;
+      try { data = raw ? JSON.parse(raw) : null; } catch { data = null; }
 
-      const data = await r.json().catch(() => null);
+      if (!r.ok) {
+        if (r.status === 401 || r.status === 403) {
+          patchVoteSession(pid, { last_error_code: "BAD_SIGNATURE", last_checked_at_ms: Date.now() });
+          setPollStatus("BAD_SIGNATURE", "Identity signature was rejected by the Exchange for this request. (Your vote state can’t be verified on this device.)");
+        } else if (r.status === 404) {
+          // Some older Exchange builds may not have my-ballot yet.
+          patchVoteSession(pid, { last_error_code: "MY_BALLOT_UNAVAILABLE", last_checked_at_ms: Date.now() });
+          setPollStatus(null, null);
+        }
+        return false;
+      }
+
       if (!data?.ok) return false;
-      if (!data?.has_vote) return true; // authoritative "no vote" is still useful
+
+      const hasVote = data?.has_vote === true;
+      patchVoteSession(pid, { last_known_has_vote: hasVote, last_checked_at_ms: Date.now() });
+
+      // STRANDED detection:
+      const localToken = getToken(pid);
+      if (hasVote && !localToken) {
+        markStranded(pid, "missing_token");
+      } else {
+        clearStrandedUi(pid);
+      }
+
+      if (!hasVote) return true;
 
       const optionId = String(data.option_id || "");
       if (!optionId) return true;
 
-      // Best-effort label mapping (server may include option_label; otherwise map via poll options)
       let label = (typeof data.option_label === "string") ? data.option_label : "";
       if (!label && poll?.options) {
         const opt = (poll.options || []).find(o => String(o?.id) === optionId);
@@ -1296,13 +1413,13 @@ function setAdminEnabled(enabled) {
       }
 
       if (label && vb) {
-        // Persist as a convenience hint, but now backed by authoritative server truth.
-        setRemoteLastChoice(String(pollId), label);
+        setRemoteLastChoice(pid, label);
         renderVoteButtons(vb, poll, label);
       }
 
       return true;
-    } catch (_) {
+    } catch (_e) {
+      patchVoteSession(String(pollId), { last_error_code: "NETWORK" });
       return false;
     }
   }
@@ -1312,13 +1429,15 @@ function setAdminEnabled(enabled) {
   // =========================
   // Remote voting with one-step self-heal
   // =========================
-  async function exchangeVoteWithRetry(poll, pollId, option_id, choiceLabel, outEl) {
+  async function exchangeVoteWithRetry(poll, pollId, option_id, choiceLabel, outEl, opts) {
     // Attempt order:
     // 1) If we have a voter_token, try X-Voter-Token (no stamp).
     //    If token is rejected, clear it and fall back to stamp once.
     // 2) If no token (or token rejected), get a stamp and try X-Stamp.
     //    If stamp is rejected, clear stamp pool, mint once, retry once.
     const payload = { option_id };
+
+    const allowStamp = (opts && Object.prototype.hasOwnProperty.call(opts, "allowStamp")) ? !!opts.allowStamp : true;
 
     const attempt = async (headers) => {
       const r = await fetch(`${EXCHANGE_API}/polls/${encodeURIComponent(String(pollId))}/vote`, {
@@ -1344,17 +1463,26 @@ function setAdminEnabled(enabled) {
         return { ok: true, used: "voter_token", data: res.data };
       }
 
-      // If token was rejected, clear it and fall back once.
-      // We treat 401/403 as likely auth/token problems; keep other statuses as normal failures.
-      if (res.status === 401 || res.status === 403) {
+      // If token was rejected, do NOT fall back to stamp automatically.
+      // This prevents accidental double-intent when the Exchange already has a vote.
+      const errText = String(res.data?.error || res.raw || "");
+      if (res.status === 403 && errText.includes("invalid X-Voter-Token")) {
         clearToken(pollId);
-      } else {
-        if (outEl) outEl.textContent = `Vote failed (${res.status}).`;
-        return { ok: false, error: res.raw || String(res.status) };
+        markStranded(pollId, "invalid_token");
+        if (outEl) outEl.textContent = "Revote token rejected. This device is stranded for changes.";
+        return { ok: false, error: "invalid_voter_token", stranded: true };
       }
+
+      if (outEl) outEl.textContent = `Vote failed (${res.status}).`;
+      return { ok: false, error: res.raw || String(res.status) };
     }
 
-    // ---- stamp path (first vote, or token fallback)
+    // ---- stamp path (first vote)
+    if (!allowStamp) {
+      if (outEl) outEl.textContent = "Vote blocked: Exchange indicates an existing vote (or vote state unknown).";
+      return { ok: false, error: "stamp_disallowed" };
+    }
+
     let stamp = await getOrFetchOneStampOrNull();
     if (!stamp) {
       if (outEl) outEl.textContent = "Vote blocked: could not obtain stamp.";
@@ -1595,10 +1723,32 @@ function setAdminEnabled(enabled) {
     // UI hint (local only): remember last choice for this poll
     setRemoteLastChoice(pollIdStr, choice);
 
+    // Pre-check (authoritative when available): if Exchange says we already voted,
+    // do NOT attempt stamp-vote on this device. This prevents phantom revote loops.
+    const sessionBefore = getVoteSession(pollIdStr);
+    // If we haven't checked recently, try once now (best effort).
+    if (!sessionBefore.last_checked_at_ms || (Date.now() - sessionBefore.last_checked_at_ms) > 5000) {
+      try {
+        const vbTmp = document.getElementById("voteButtons");
+        await fetchRemoteMyBallotAndApplySelection(poll, pollIdStr, vbTmp);
+      } catch {}
+    }
+
+    const session = getVoteSession(pollIdStr);
+    const tokenNow = getToken(pollIdStr);
+
+    if (session.last_known_has_vote === true && !tokenNow) {
+      // Stranded: explicit local refusal
+      markStranded(pollIdStr, "missing_token");
+      if (out) out.textContent = "Vote cannot be changed on this device (missing revote token).";
+      return;
+    }
+
     // Prevent double-posts
     setUiBusy(true, "Submitting…");
     try {
-      const res = await exchangeVoteWithRetry(poll, pollIdStr, option_id, choice, out);
+      const allowStamp = (getVoteSession(pollIdStr).last_known_has_vote !== true);
+      const res = await exchangeVoteWithRetry(poll, pollIdStr, option_id, choice, out, { allowStamp });
 
       // Re-render buttons so selection is obvious immediately
       const vbNow = document.getElementById("voteButtons");
@@ -1692,6 +1842,30 @@ function setAdminEnabled(enabled) {
 
     if (window.__initLegacyUI_ran) return;
     window.__initLegacyUI_ran = true;
+    // Poll status banner buttons (poll view)
+    const clearHintBtn = document.getElementById("clearVoteHintBtn");
+    if (clearHintBtn) {
+      clearHintBtn.onclick = () => {
+        if (!currentPollId) return;
+        clearLocalVoteHintOnly(currentPollId, null);
+        setPollStatus(null, null);
+        const out = document.getElementById("voteOut");
+        if (out) out.textContent = "Local vote hint cleared.";
+      };
+    }
+
+    const clearTokBtn = document.getElementById("clearRevoteTokenBtn");
+    if (clearTokBtn) {
+      clearTokBtn.onclick = () => {
+        if (!currentPollId) return;
+        clearToken(String(currentPollId));
+        patchVoteSession(String(currentPollId), { stranded_reason: "missing_token" });
+        markStranded(String(currentPollId), "missing_token");
+        const out = document.getElementById("voteOut");
+        if (out) out.textContent = "Revote token cleared locally for this poll.";
+      };
+    }
+
 
     // Optional editor
     try { initQuestionEditor(); } catch {}

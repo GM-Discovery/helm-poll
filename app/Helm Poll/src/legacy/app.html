@@ -124,6 +124,16 @@
 
               <!-- Prominent status line (JS populates #pollMeta today; keep ID, but give it room) -->
               <div class="muted" id="pollMeta" style="margin-top:6px; font-size:14px;"></div>
+
+              <!-- Vote status / stranded banner (UI-only) -->
+              <div id="pollStatusBanner" style="display:none; margin-top:10px; padding:10px 12px; border-radius:12px; border:1px solid rgba(0,0,0,0.12); background:rgba(255, 235, 205, 0.35);">
+                <div id="pollStatusText" style="font-size:13px; line-height:1.35;"></div>
+                <div class="row" style="gap:10px; flex-wrap:wrap; margin-top:10px;">
+                  <button id="clearVoteHintBtn" type="button" class="btn-small btn-ghost" style="width:auto; height:36px;">Clear local vote hint</button>
+                  <button id="clearRevoteTokenBtn" type="button" class="btn-small btn-ghost" style="width:auto; height:36px;">Clear revote token (debug)</button>
+                </div>
+              </div>
+
             </div>
 
             <div class="row" style="justify-content:flex-end;">

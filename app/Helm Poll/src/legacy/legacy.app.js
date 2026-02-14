@@ -181,6 +181,67 @@ function setAdminEnabled(enabled) {
     });
   }
 
+
+  // =========================
+  // Identity summary (trust visibility)
+  // =========================
+  async function exchangeFetchIdentitySummaryOrNull() {
+    try {
+      const r = await exchangeFetchAuthed("/identity/summary", { method: "GET" });
+      if (!r.ok) {
+        // Missing identity, bad signature, etc.
+        return null;
+      }
+      const j = await r.json().catch(() => null);
+      if (!j || j.ok !== true) return null;
+      return j;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function setIdentityAliasUi(aliasOrNull) {
+    const aliasEl = document.getElementById("identityPublicAlias");
+    if (aliasEl) aliasEl.value = aliasOrNull ? String(aliasOrNull) : "";
+  }
+
+  async function refreshTrustVisibilityUi(statusElOrNull) {
+    const tp = document.getElementById("statTrustPoints");
+    const et = document.getElementById("statEarnedTrust");
+    const dt = document.getElementById("statDelegatedTrust");
+
+    const hasIdentity = !!getExchangeHmacCredsOrNull();
+    if (!hasIdentity) {
+      setIdentityAliasUi("");
+      if (tp) tp.textContent = "—";
+      if (et) et.textContent = "—";
+      if (dt) dt.textContent = "—";
+      if (statusElOrNull) statusElOrNull.textContent = "No identity on this device.";
+      return;
+    }
+
+    if (statusElOrNull) statusElOrNull.textContent = "Fetching trust summary…";
+    const s = await exchangeFetchIdentitySummaryOrNull();
+    if (!s) {
+      // Keep existing UI, but make failure legible.
+      if (statusElOrNull) statusElOrNull.textContent = "Could not fetch trust summary (signed).";
+      return;
+    }
+
+    // public_alias is safe to show; store locally as convenience.
+    if (s.public_alias) {
+      localStorage.setItem("exchange_public_alias", String(s.public_alias));
+      setIdentityAliasUi(String(s.public_alias));
+    }
+
+    // UI convention: TRUST POINTS shows combined available.
+    if (tp) tp.textContent = String(s.combined_available ?? "—");
+    if (et) et.textContent = String(s.earned_personal ?? "—");
+    if (dt) dt.textContent = String(s.inbound_delegated ?? "—");
+
+    if (statusElOrNull) statusElOrNull.textContent = "Trust summary updated.";
+  }
+
   // =========================
   // Identity create (PoW-lite)
   // =========================
@@ -1580,6 +1641,13 @@ function setAdminEnabled(enabled) {
     if (tabCreate) tabCreate.classList.toggle("active", tabName === "create");
     if (tabPolls) tabPolls.classList.toggle("active", tabName === "polls");
     if (tabSettings) tabSettings.classList.toggle("active", tabName === "settings");
+
+    // When entering Settings, refresh trust summary (signed).
+    if (tabName === "settings") {
+      // Fire-and-forget; UI will show status if possible.
+      const exchangeStatus = document.getElementById("exchangeStatus");
+      refreshTrustVisibilityUi(exchangeStatus);
+    }
   }
 
   function showPollList() {
@@ -1679,6 +1747,8 @@ function setAdminEnabled(enabled) {
     const identityPasswordEl = document.getElementById("identitySigningKey"); // UX label is "Password"
     const createIdentityBtn = document.getElementById("createIdentityBtn");
     const copyRecoveryBtn = document.getElementById("copyIdentityBackupBtn");
+    const copyAliasBtn = document.getElementById("copyPublicAliasBtn");
+
     const identityStatus = document.getElementById("identityStatus");
     const exchangeStatus = document.getElementById("exchangeStatus"); // optional status line on Settings
 
@@ -1729,16 +1799,10 @@ function setAdminEnabled(enabled) {
 
 
     refreshIdentityUi();
+          // Fetch authoritative trust summary for the new identity
+          await refreshTrustVisibilityUi(exchangeStatus || identityStatus);
 
-          // Seed stats placeholders (we will populate from stamps after first assert/mint)
-          const tp = document.getElementById("statTrustPoints");
-          const et = document.getElementById("statEarnedTrust");
-          const dt = document.getElementById("statDelegatedTrust");
-          if (tp) tp.textContent = "1";
-          if (et) et.textContent = "—";
-          if (dt) dt.textContent = "—";
-
-          if (exchangeStatus) exchangeStatus.textContent = "Identity ready. Assert will mint stamps as needed.";
+          if (exchangeStatus) exchangeStatus.textContent = "Identity ready. Signed endpoints enabled.";
         } catch (e) {
           if (identityStatus) identityStatus.textContent = String(e?.message || e);
         } finally {
@@ -1771,6 +1835,26 @@ function setAdminEnabled(enabled) {
       };
     }
 
+
+    if (copyAliasBtn) {
+      copyAliasBtn.onclick = async () => {
+        try {
+          const a = getExchangeAliasOrNull();
+          if (!a) {
+            if (identityStatus) identityStatus.textContent = "No public alias available.";
+            return;
+          }
+          await copyTextToClipboardOrThrow(String(a));
+          if (identityStatus) identityStatus.textContent = "Public alias copied.";
+        } catch (e) {
+          if (identityStatus) identityStatus.textContent = `Copy failed: ${String(e?.message || e)}`;
+        }
+      };
+    }
+
+    // Always refresh trust visibility when Settings is initialized.
+    // (Also called on Settings tab open.)
+    refreshTrustVisibilityUi(exchangeStatus || identityStatus);
     // =========================
     
 
@@ -1822,13 +1906,21 @@ const trustReasonInput = document.getElementById("trustReasonInput");
 const trustApplyBtn = document.getElementById("trustApplyBtn");
 const trustStatus = document.getElementById("trustStatus");
 
-async function exchangeGrantTrust(public_alias, delta_weight, reason) {
+async function exchangeGrantTrust(public_alias, weight_delta, reason) {
   const opKey = getOperatorKeyMemOrNull();
-  if (!isAdminEnabled() || !opKey) throw new Error("Admin Mode not enabled (operator key missing).");
+  if (!isAdminEnabled() || !opKey) {
+    throw new Error("Admin Mode not enabled (operator key missing).");
+  }
+
+  const alias = String(public_alias || "").trim();
+  const delta = Number(weight_delta);
+
+  if (!alias) throw new Error("public_alias is required.");
+  if (!Number.isFinite(delta)) throw new Error("weight_delta must be a number.");
 
   const body = {
-    public_alias: String(public_alias || "").trim(),
-    delta_weight: Number(delta_weight),
+    public_alias: alias,
+    weight_delta: delta,              // ✅ backend expects this name
     reason: String(reason || "").trim(),
   };
 
@@ -1842,6 +1934,7 @@ async function exchangeGrantTrust(public_alias, delta_weight, reason) {
   if (!r.ok) throw new Error(`Trust grant failed (${r.status}). ${raw}`);
   try { return JSON.parse(raw); } catch { return { ok: true }; }
 }
+
 
 if (trustApplyBtn) {
   trustApplyBtn.onclick = async () => {

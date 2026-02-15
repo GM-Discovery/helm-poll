@@ -722,6 +722,60 @@ function setAdminEnabled(enabled) {
     return v || null;
   }
 
+// =========================
+// Local Labels (per-identity, local-only)
+// =========================
+// These are NOT canonical identity claims. They are convenience labels stored on this device,
+// scoped to the current exchange identity (self_id) so multiple identities on one device
+// do not bleed labels into each other.
+function getAliasLabelStoreKeyOrNull() {
+  const self_id = getExchangeSelfIdOrNull();
+  if (!self_id) return null;
+  return `alias_labels_v0::${String(self_id)}`;
+}
+
+function loadAliasLabelsMap() {
+  const k = getAliasLabelStoreKeyOrNull();
+  if (!k) return {};
+  try {
+    const raw = localStorage.getItem(k);
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj === "object") ? obj : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveAliasLabelsMap(map) {
+  const k = getAliasLabelStoreKeyOrNull();
+  if (!k) return;
+  try {
+    localStorage.setItem(k, JSON.stringify(map || {}));
+  } catch {
+    // ignore quota / storage failures
+  }
+}
+
+function getAliasLabelOrNull(public_alias) {
+  if (!public_alias) return null;
+  const m = loadAliasLabelsMap();
+  const v = m[String(public_alias)];
+  return (typeof v === "string" && v.trim()) ? v.trim() : null;
+}
+
+function setAliasLabel(public_alias, labelOrNull) {
+  if (!public_alias) return;
+  const m = loadAliasLabelsMap();
+  const k = String(public_alias);
+
+  const v = (labelOrNull == null) ? "" : String(labelOrNull).trim();
+  if (!v) delete m[k];
+  else m[k] = v;
+
+  saveAliasLabelsMap(m);
+}
+
   function getExchangeSigningKeyOrNull() {
     const v = (localStorage.getItem(LS_EXCHANGE_SIGNING_KEY) || "").trim();
     return v || null;
@@ -2184,25 +2238,226 @@ refreshStampUi();
     const delegationRevokeBtn = document.getElementById("delegationRevokeBtn");
     const delegationStatus = document.getElementById("delegationStatus");
 
+
+// =========================
+// Settings: Outbound Delegations (ACTIVE only)
+// =========================
+const delegationRefreshBtn = document.getElementById("delegationRefreshBtn");
+const delegationOutboundStatus = document.getElementById("delegationOutboundStatus");
+const delegationOutboundList = document.getElementById("delegationOutboundList");
+
+function fmtIsoShort(isoOrNull) {
+  if (!isoOrNull) return "—";
+  const t = Date.parse(String(isoOrNull));
+  if (!Number.isFinite(t)) return "—";
+  // YYYY-MM-DD (operator-legible; no locale surprises)
+  return new Date(t).toISOString().slice(0, 10);
+}
+
+function renderOutboundList(rows) {
+  if (!delegationOutboundList) return;
+  delegationOutboundList.innerHTML = "";
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "muted2";
+    empty.textContent = "No active outbound delegations.";
+    delegationOutboundList.appendChild(empty);
+    return;
+  }
+
+  for (const r of rows) {
+    const alias = r?.delegatee_alias || null;
+    const amount = Number(r?.amount || 0);
+
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.gap = "10px";
+    row.style.alignItems = "center";
+    row.style.justifyContent = "space-between";
+    row.style.padding = "12px";
+    row.style.border = "1px solid var(--stroke)";
+    row.style.borderRadius = "14px";
+    row.style.background = "rgba(255,255,255,.03)";
+    row.style.color = "var(--text)";
+
+    const left = document.createElement("div");
+    left.style.display = "flex";
+    left.style.flexDirection = "column";
+    left.style.gap = "2px";
+    left.style.minWidth = "0";
+
+    // Label + alias id (local-only label, per identity)
+    const label = alias ? getAliasLabelOrNull(alias) : null;
+
+    const top = document.createElement("div");
+    top.style.display = "flex";
+    top.style.gap = "10px";
+    top.style.alignItems = "baseline";
+    top.style.minWidth = "0";
+
+    const primary = document.createElement("strong");
+    primary.textContent = label ? String(label) : (alias ? String(alias) : "(unknown alias)");
+    primary.style.overflow = "hidden";
+    primary.style.textOverflow = "ellipsis";
+    primary.style.whiteSpace = "nowrap";
+
+    const amtEl = document.createElement("span");
+    amtEl.className = "muted";
+    amtEl.textContent = `amount=${amount}`;
+
+    top.appendChild(primary);
+    top.appendChild(amtEl);
+
+    const aliasId = document.createElement("div");
+    aliasId.className = "muted2";
+    aliasId.style.fontSize = "12px";
+    aliasId.textContent = alias ? String(alias) : "";
+
+    const meta = document.createElement("div");
+    meta.className = "muted2";
+    meta.style.fontSize = "12px";
+    meta.textContent = `expires ${fmtIsoShort(r?.expires_at)} · updated ${fmtIsoShort(r?.updated_at || r?.created_at)}`;
+
+    left.appendChild(top);
+    if (label) left.appendChild(aliasId);
+    left.appendChild(meta);
+
+    const right = document.createElement("div");
+    right.style.display = "flex";
+    right.style.gap = "8px";
+    right.style.alignItems = "center";
+
+    const labelBtn = document.createElement("button");
+    labelBtn.type = "button";
+    labelBtn.className = "smallBtn";
+    labelBtn.textContent = "Label";
+    labelBtn.onclick = async () => {
+      try {
+        if (!alias) return;
+        const current = getAliasLabelOrNull(alias) || "";
+        const next = prompt(
+          `Set a local label for:\n${alias}\n\nExamples: @grant, @alice\n(Leave blank to clear)`,
+          current
+        );
+        if (next === null) return; // user canceled
+        setAliasLabel(alias, next);
+        await refreshOutboundDelegationsUi();
+      } catch (e) {
+        if (delegationOutboundStatus) delegationOutboundStatus.textContent = String(e?.message || e);
+      }
+    };
+
+    const revokeBtn = document.createElement("button");
+    revokeBtn.type = "button";
+    revokeBtn.className = "smallBtn";
+    revokeBtn.textContent = "Revoke";
+    revokeBtn.onclick = async () => {
+      try {
+        if (!alias) {
+          if (delegationOutboundStatus) delegationOutboundStatus.textContent = "Cannot revoke: missing delegatee alias.";
+          return;
+        }
+        setUiBusy(true, "Revoking delegation…");
+        await exchangeRevokeDelegation(String(alias));
+
+        if (delegationOutboundStatus) delegationOutboundStatus.textContent = "Delegation revoked.";
+        await refreshTrustVisibilityUi(exchangeStatus || identityStatus);
+        await refreshOutboundDelegationsUi();
+      } catch (e) {
+        if (delegationOutboundStatus) delegationOutboundStatus.textContent = String(e?.message || e);
+      } finally {
+        setUiBusy(false, null);
+      }
+    };
+
+    right.appendChild(labelBtn);
+    right.appendChild(revokeBtn);
+
+    row.appendChild(left);
+    row.appendChild(right);
+
+    delegationOutboundList.appendChild(row);
+  }
+}
+
+async function refreshOutboundDelegationsUi() {
+  if (!delegationOutboundStatus || !delegationOutboundList) return;
+
+  const hasIdentity = !!getExchangeHmacCredsOrNull();
+  if (!hasIdentity) {
+    delegationOutboundStatus.textContent = "Outbound list unavailable (no identity).";
+    renderOutboundList([]);
+    return;
+  }
+
+  delegationOutboundStatus.textContent = "Fetching outbound delegations…";
+  try {
+    const r = await exchangeFetchAuthed("/delegation/outbound", { method: "GET" });
+    const raw = await r.text().catch(() => "");
+    if (!r.ok) {
+      delegationOutboundStatus.textContent = `Outbound list unavailable (${r.status}). ${raw}`;
+      renderOutboundList([]);
+      return;
+    }
+    let data = null;
+    try { data = JSON.parse(raw); } catch { data = null; }
+    const rows = (data && Array.isArray(data.outbound)) ? data.outbound : [];
+    const cap = Number(data?.cap || 0);
+    delegationOutboundStatus.textContent = `Loaded (${rows.length}${cap ? " / cap " + cap : ""}).`;
+    renderOutboundList(rows);
+  } catch (e) {
+    delegationOutboundStatus.textContent = String(e?.message || e);
+    renderOutboundList([]);
+  }
+}
+
+if (delegationRefreshBtn) {
+  delegationRefreshBtn.onclick = async () => {
+    try {
+      await refreshTrustVisibilityUi(exchangeStatus || identityStatus);
+      await refreshOutboundDelegationsUi();
+    } catch (e) {
+      if (delegationOutboundStatus) delegationOutboundStatus.textContent = String(e?.message || e);
+    }
+  };
+}
+
+
     // convenience: remember last typed values (local only)
     if (delegateeAliasInput) delegateeAliasInput.value = localStorage.getItem("exchange_last_delegatee_alias") || "";
     if (delegateAmountInput) delegateAmountInput.value = localStorage.getItem("exchange_last_delegate_amount") || "";
 
     async function exchangeSetDelegation(delegatee_alias, amount) {
-      const body = { delegatee_alias: String(delegatee_alias), amount: Number(amount) };
-      const r = await exchangeFetchAuthed("/delegation/set", { method: "POST", body });
-      const raw = await r.text().catch(() => "");
-      if (!r.ok) throw new Error(`Delegation set failed (${r.status}). ${raw}`);
-      try { return JSON.parse(raw); } catch { return { ok: true }; }
-    }
+  const self_id = getExchangeSelfIdOrNull();
+  if (!self_id) throw new Error("Missing Exchange identity (self_id).");
+
+  const body = {
+    self_id: String(self_id),
+    delegatee_alias: String(delegatee_alias),
+    amount: Number(amount),
+  };
+
+  const r = await exchangeFetchAuthed("/delegation/set", { method: "POST", body });
+  const raw = await r.text().catch(() => "");
+  if (!r.ok) throw new Error(`Delegation set failed (${r.status}). ${raw}`);
+  try { return JSON.parse(raw); } catch { return { ok: true }; }
+}
 
     async function exchangeRevokeDelegation(delegatee_alias) {
-      const body = { delegatee_alias: String(delegatee_alias) };
-      const r = await exchangeFetchAuthed("/delegation/revoke", { method: "POST", body });
-      const raw = await r.text().catch(() => "");
-      if (!r.ok) throw new Error(`Delegation revoke failed (${r.status}). ${raw}`);
-      try { return JSON.parse(raw); } catch { return { ok: true }; }
-    }
+  const self_id = getExchangeSelfIdOrNull();
+  if (!self_id) throw new Error("Missing Exchange identity (self_id).");
+
+  const body = {
+    self_id: String(self_id),
+    delegatee_alias: String(delegatee_alias),
+  };
+
+  const r = await exchangeFetchAuthed("/delegation/revoke", { method: "POST", body });
+  const raw = await r.text().catch(() => "");
+  if (!r.ok) throw new Error(`Delegation revoke failed (${r.status}). ${raw}`);
+  try { return JSON.parse(raw); } catch { return { ok: true }; }
+}
 
     if (delegationSetBtn) {
       delegationSetBtn.onclick = async () => {
@@ -2219,7 +2474,8 @@ refreshStampUi();
           setUiBusy(true, "Setting delegation…");
           const data = await exchangeSetDelegation(alias, amt);
 
-          if (delegationStatus) {
+          await refreshOutboundDelegationsUi();
+      if (delegationStatus) {
             // Show a few helpful fields if present (backend may vary)
             const a = data?.delegated_out_sum != null ? `delegated_out_sum=${data.delegated_out_sum}` : "";
             const b = data?.delegator_available_weight != null ? `available=${data.delegator_available_weight}` : "";
@@ -2242,7 +2498,8 @@ refreshStampUi();
           setUiBusy(true, "Revoking delegation…");
           const data = await exchangeRevokeDelegation(alias);
 
-          if (delegationStatus) delegationStatus.textContent = "Delegation revoked.";
+          await refreshOutboundDelegationsUi();
+      if (delegationStatus) delegationStatus.textContent = "Delegation revoked.";
         } catch (e) {
           if (delegationStatus) delegationStatus.textContent = String(e?.message || e);
         } finally {

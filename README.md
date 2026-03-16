@@ -1,5 +1,8 @@
 # Helm Poll
 
+DEPRECIATED - Please see "https://github.com/GM-Discovery/bread-exchange-mvp" for how to run an exchange server (aka host the app)
+
+
 Helm Poll is a desktop governance application (Tauri) that provides an interface to a local or community Exchange.
 
 - **Personal Mode:** runs a local Exchange on your device (default)
